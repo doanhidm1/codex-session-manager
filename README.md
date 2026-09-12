@@ -12,7 +12,7 @@ A zero-dependency, cross-platform CLI tool and Python library for managing, migr
 ## 🌟 Key Features
 
 1. **Provider Switching with Automatic Incremental Sync:**
-   - Switching provider focus (e.g. `switch deepseek` or `switch openai`) automatically syncs all newly generated conversation turns **before** toggling sidebar visibility. You never have to remember to run manual syncs!
+   - Switching providers (e.g. `switch deepseek` or `switch openai`) automatically syncs all newly generated conversation turns **before** toggling sidebar visibility. You never have to remember to run manual syncs!
 2. **Model & Reasoning Effort Preservation:**
    - Automatically remembers and restores the exact model and reasoning effort settings last used for each provider (e.g., if you switch OpenAI to `gpt-5.6-luna` with `max` effort, and DeepSeek to `deepseek-flash` with `max` effort or `deepseek-pro`, your settings are preserved across switches and restored into `config.toml`).
 3. **DeepSeek Pre-flight Configuration Detection:**
@@ -52,14 +52,16 @@ codex-session-manager/
 │   ├── mapping.py             # Dedicated mapping database (session_manager.sqlite)
 │   ├── backup.py              # Snapshot backup and rollback engine
 │   ├── projection.py          # SQLite byte-offset and ordinal projection
+│   ├── provider.py            # Provider validation & model settings preservation
 │   ├── rollout.py             # Parser and serializer for JSONL wire format
 │   ├── migration.py           # Session clone orchestration and metadata preservation
 │   ├── sync.py                # Incremental two-way append-only sync algorithm
 │   └── switch.py              # Provider switcher with auto-sync & archive toggle
-├── scripts/                   # Helper automation scripts
-│   ├── switch-deepseek.bat    # 1-click auto-sync + switch to DeepSeek
-│   ├── switch-openai.bat      # 1-click auto-sync + switch to OpenAI
-│   └── sync-sessions.bat      # 1-click bidirectional sync
+├── scripts/                   # Automation scripts (Windows, macOS, Linux)
+│   ├── switch-deepseek.bat    # Windows: 1-click switch to DeepSeek
+│   ├── switch-openai.bat      # Windows: 1-click switch to OpenAI
+│   ├── switch-deepseek.sh     # macOS/Linux: 1-click switch to DeepSeek
+│   └── switch-openai.sh       # macOS/Linux: 1-click switch to OpenAI
 └── tests/
     └── test_smoke.py          # Fast automated test suite (< 5ms)
 ```
@@ -76,7 +78,7 @@ List all active mappings and their sync status:
 python codex_migrator.py pairs
 ```
 
-### 2. Switch Provider Focus (Auto-Syncs by Default)
+### 2. Switch Provider (Auto-Syncs by Default)
 - **Switch to DeepSeek** (Auto-syncs new turns, displays DeepSeek sessions, hides OpenAI sessions):
   ```bash
   python codex_migrator.py switch deepseek

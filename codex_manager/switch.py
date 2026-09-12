@@ -119,7 +119,3 @@ def switch_provider(target_mode, codex_home, auto_sync=True):
         print("[+] Status: All sessions are now visible.")
 
     return True
-
-# Backward compatibility alias
-def focus_mode(target_mode, codex_home):
-    return switch_provider(target_mode, codex_home, auto_sync=True)

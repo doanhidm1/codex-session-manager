@@ -65,7 +65,7 @@ def main():
 
     if cmd == 'list':
         list_threads(paths.state_db)
-    elif cmd in ('switch', 'focus'):
+    elif cmd == 'switch':
         mode = args[1] if len(args) > 1 else 'deepseek'
         switch_provider(mode, codex_home, auto_sync=(not no_sync))
     elif cmd == 'pairs':

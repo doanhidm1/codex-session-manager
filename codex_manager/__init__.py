@@ -1,6 +1,6 @@
 """
 Codex Session Manager
-A zero-dependency, cross-platform toolkit for managing, cloning, focusing,
+A zero-dependency, cross-platform toolkit for managing, cloning, switching providers,
 and synchronizing OpenAI Codex sessions across providers (DeepSeek, OpenAI, etc.).
 """
 
