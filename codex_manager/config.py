@@ -35,3 +35,4 @@ class CodexPaths:
         self.cat_db = os.path.join(self.codex_home, "sqlite", "codex-dev.db")
         self.backup_root = os.path.join(self.codex_home, "backup-sessions")
         self.sessions_dir = os.path.join(self.codex_home, "sessions")
+        self.mapping_db = os.path.join(self.codex_home, "session_manager.sqlite")

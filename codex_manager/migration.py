@@ -387,6 +387,14 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
             except Exception:
                 pass
 
+        # 8. Register in dedicated session_manager.sqlite mapping DB
+        try:
+            from .mapping import register_pair
+            pair_name = old_name or clean_title.replace("[DS] ", "").strip()
+            register_pair(paths.mapping_db, pair_name, source_thread_id, new_thread_id)
+        except Exception:
+            pass
+
         with open(backup_meta_file, "r", encoding="utf-8") as f:
             bm = json.load(f)
         bm["created_thread_id"] = new_thread_id
@@ -474,6 +482,13 @@ def rollback_thread(target_id, codex_home):
             with sqlite3.connect(paths.cat_db, timeout=5.0) as cat_conn:
                 cat_conn.cursor().execute("DELETE FROM local_thread_catalog WHERE thread_id = ?", (created_tid,))
                 cat_conn.commit()
+        except Exception:
+            pass
+
+    if created_tid:
+        try:
+            from .mapping import remove_pair
+            remove_pair(paths.mapping_db, created_tid)
         except Exception:
             pass
 

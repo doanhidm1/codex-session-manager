@@ -302,21 +302,23 @@ def sync_threads(src_arg, tgt_arg, codex_home):
     return True
 
 def sync_all_pairs(codex_home):
-    """Scan and run bidirectional sync on all paired sessions."""
+    """Scan and run bidirectional sync on all registered pairs in session_manager.sqlite."""
     paths = CodexPaths(codex_home)
-    pairs = get_paired_threads(paths.state_db)
+    from .mapping import auto_seed_existing_pairs, get_all_pairs, update_last_synced
+    auto_seed_existing_pairs(codex_home)
+    pairs = get_all_pairs(paths.mapping_db, active_only=True)
 
     if not pairs:
-        print("[i] Không tìm thấy cặp session nào để đồng bộ.")
+        print("[i] Không tìm thấy cặp session nào trong mapping database để đồng bộ.")
         return True
 
-    print(f"[*] Bắt đầu đồng bộ hai chiều cho tất cả {len(pairs)} cặp session...")
-    for orig_t, ds_t in pairs:
-        orig_name = orig_t[1] or orig_t[0]
-        ds_name = ds_t[1] or ds_t[0]
-        print(f"\n--- Đồng bộ cặp: [{orig_name}] <---> [{ds_name}] ---")
-        sync_threads(orig_name, ds_name, codex_home)
-        sync_threads(ds_name, orig_name, codex_home)
+    print(f"[*] Bắt đầu đồng bộ hai chiều cho tất cả {len(pairs)} cặp session đã đăng ký...")
+    for p in pairs:
+        pair_id, name, o_id, d_id, cat, lsync, is_act = p
+        print(f"\n--- Đồng bộ cặp: [{name}] (OpenAI: {o_id[:8]} <---> DeepSeek: {d_id[:8]}) ---")
+        sync_threads(o_id, d_id, codex_home)
+        sync_threads(d_id, o_id, codex_home)
+        update_last_synced(paths.mapping_db, pair_id)
 
     print("\n[+] Đã hoàn tất đồng bộ hai chiều cho toàn bộ các cặp session!")
     return True
