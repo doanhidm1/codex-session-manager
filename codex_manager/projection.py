@@ -132,7 +132,10 @@ def build_thread_projection(rollout_path, thread_id, th_db):
     th_cur.execute("DELETE FROM thread_history_projection_state WHERE thread_id = ?", (thread_id,))
     th_cur.execute("DELETE FROM thread_turns WHERE thread_id = ?", (thread_id,))
     th_cur.execute("DELETE FROM thread_items WHERE thread_id = ?", (thread_id,))
-    th_cur.execute("DELETE FROM thread_realtime_items WHERE thread_id = ?", (thread_id,))
+    try:
+        th_cur.execute("DELETE FROM thread_realtime_items WHERE thread_id = ?", (thread_id,))
+    except sqlite3.OperationalError:
+        pass
 
     turn_cols = [
         'thread_id', 'turn_id', 'rollout_ordinal', 'status', 'error_json',
