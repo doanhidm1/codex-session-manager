@@ -41,7 +41,9 @@ def switch_provider(target_mode, codex_home, auto_sync=True):
         restored_model, restored_effort = switch_provider_settings(codex_home, mode)
         print(f"[*] Configuration updated in config.toml: provider='{mode}', model='{restored_model}', reasoning_effort='{restored_effort}'")
 
+    from .discovery import discover_and_pair_unmapped_threads
     auto_seed_existing_pairs(codex_home)
+    discover_and_pair_unmapped_threads(codex_home)
     pairs = get_all_pairs(paths.mapping_db, active_only=True)
 
     if not pairs:

@@ -3,6 +3,7 @@ import re
 import shutil
 import sqlite3
 from .config import CodexPaths
+from .toml_utils import update_config_toml, read_config_toml
 
 SUPPORTED_PROVIDERS = ("openai", "deepseek")
 DEEPSEEK_DOCS_URL = "https://api-docs.deepseek.com/quick_start/agent_integrations/codex/"
@@ -165,40 +166,7 @@ def detect_current_provider_settings(codex_home, provider):
 
     return detected_model or def_model, detected_effort or def_effort
 
-def update_config_toml(codex_home, updates):
-    """Safely update top-level key-values in config.toml, keeping backups and structure intact."""
-    paths = CodexPaths(codex_home)
-    if not os.path.exists(paths.config_toml):
-        return False
 
-    bak_path = paths.config_toml + ".bak"
-    try:
-        shutil.copy2(paths.config_toml, bak_path)
-    except Exception:
-        pass
-
-    with open(paths.config_toml, "r", encoding="utf-8") as f:
-        text = f.read()
-
-    # Boundary before first section [
-    m = re.search(r'(?m)^\[', text)
-    top_end = m.start() if m else len(text)
-    top_part = text[:top_end]
-    rest = text[top_end:]
-
-    for k, v in updates.items():
-        pattern = rf'(?m)^{re.escape(k)}\s*=.*$'
-        val_str = f'"{v}"' if isinstance(v, str) else str(v)
-        replacement = f'{k} = {val_str}'
-        if re.search(pattern, top_part):
-            top_part = re.sub(pattern, replacement, top_part)
-        else:
-            top_part = f"{replacement}\n" + top_part
-
-    with open(paths.config_toml, "w", encoding="utf-8") as f:
-        f.write(top_part + rest)
-
-    return True
 
 def switch_provider_settings(codex_home, target_provider):
     """

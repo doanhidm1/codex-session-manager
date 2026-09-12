@@ -1,12 +1,11 @@
 import json
-import uuid
 import time
 import os
 import shutil
 import sqlite3
 from .config import CodexPaths, normalize_path
-from .db import get_connection, resolve_thread, get_paired_threads
-from .rollout import make_wire_record
+from .db import get_connection, resolve_thread
+from .sync_builder import build_turn_sync_records
 
 def sync_threads(src_arg, tgt_arg, codex_home):
     """
@@ -65,7 +64,7 @@ def sync_threads(src_arg, tgt_arg, codex_home):
 
     print(f"[*] Found {len(new_turn_ids)} new turn(s) from [{src_name or src_id}] to append into [{tgt_name or tgt_id}]...")
 
-    # 1. Backup target rollout
+    # 1. Backup target rollout before mutation
     timestamp_str = time.strftime("%Y%m%d_%H%M%S")
     backup_dir = os.path.join(paths.backup_root, f"{timestamp_str}_sync_{tgt_id}")
     os.makedirs(backup_dir, exist_ok=True)
@@ -76,8 +75,7 @@ def sync_threads(src_arg, tgt_arg, codex_home):
     tgt_max_ord = 0
     with open(tgt_rollout, "rb") as f:
         f.seek(max(0, tgt_file_size - 65536))
-        lines = f.readlines()
-        for l in reversed(lines):
+        for l in reversed(f.readlines()):
             try:
                 e = json.loads(l.decode('utf-8'))
                 if 'ordinal' in e:
@@ -91,7 +89,7 @@ def sync_threads(src_arg, tgt_arg, codex_home):
     now_ts = int(time.time())
     now_ms = int(time.time() * 1000)
 
-    # 3. Read model & cwd of target
+    # 3. Read target model & cwd
     conn_s = get_connection(paths.state_db, timeout=10.0)
     cur_s = conn_s.cursor()
     tgt_model_row = cur_s.execute("SELECT model, cwd FROM threads WHERE id = ?", (tgt_id,)).fetchone()
@@ -110,142 +108,20 @@ def sync_threads(src_arg, tgt_arg, codex_home):
             (src_id, tid)
         ).fetchall()
 
-        user_msgs = []
-        agent_msgs = []
-        for iid, itype, iord, ijson in items:
-            idata = json.loads(ijson)
-            if itype == 'userMessage':
-                utxt = "".join(c.get('text', '') for c in idata.get('content', []) if isinstance(c, dict))
-                if utxt.strip(): user_msgs.append(utxt)
-            elif itype == 'agentMessage':
-                atxt = idata.get('text', '') or "".join(c.get('text', '') for c in idata.get('content', []) if isinstance(c, dict))
-                if atxt.strip(): agent_msgs.append(atxt)
+        turn_text, t_meta, i_metas, curr_ord, curr_offset = build_turn_sync_records(
+            tid, items, curr_ord, curr_offset, tgt_id, tgt_cwd, tgt_model, now_ts, now_ms
+        )
 
-        if not user_msgs and not agent_msgs:
+        if turn_text:
+            records_to_append.append(turn_text)
+            appended_turns_meta.append(t_meta)
+            appended_items_meta.extend(i_metas)
+        else:
             cur_th.execute(
                 "INSERT OR IGNORE INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, rollout_byte_offset, rollout_end_ordinal, rollout_end_byte_offset) "
                 "VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?)",
                 (tgt_id, tid, curr_ord, now_ts, now_ts, curr_offset, curr_ord, curr_offset)
             )
-            continue
-
-        combined_user = "\n\n".join(user_msgs) if user_msgs else "[Automated status update]"
-        agent_reply = "\n\n".join(agent_msgs) if agent_msgs else ""
-
-        turn_start_offset = curr_offset
-        turn_start_ord = curr_ord
-        turn_recs = []
-
-        def make_rec(t, p):
-            nonlocal curr_ord
-            rec_str = make_wire_record(t, p, curr_ord)
-            curr_ord += 1
-            return rec_str
-
-        turn_recs.append(make_rec("event_msg", {
-            "type": "task_started",
-            "turn_id": tid,
-            "started_at": now_ts,
-            "model_context_window": 996147,
-            "collaboration_mode_kind": "default"
-        }))
-        turn_recs.append(make_rec("turn_context", {
-            "turn_id": tid,
-            "root_turn_id": tid,
-            "cwd": tgt_cwd,
-            "model": tgt_model
-        }))
-        turn_recs.append(make_rec("response_item", {
-            "type": "message",
-            "id": f"msg_u_{tid[:8]}",
-            "role": "user",
-            "content": [{"type": "input_text", "text": combined_user}]
-        }))
-
-        u_item_id = f"item_u_{tid[:8]}"
-        turn_recs.append(make_rec("event_msg", {
-            "type": "item_completed",
-            "thread_id": tgt_id,
-            "turn_id": tid,
-            "item": {
-                "type": "UserMessage",
-                "id": u_item_id,
-                "content": [{"type": "text", "text": combined_user}]
-            }
-        }))
-
-        a_item_id = str(uuid.uuid4())
-        if agent_reply:
-            turn_recs.append(make_rec("event_msg", {
-                "type": "item_completed",
-                "thread_id": tgt_id,
-                "turn_id": tid,
-                "item": {
-                    "type": "AgentMessage",
-                    "id": a_item_id,
-                    "content": [{"type": "Text", "text": agent_reply}],
-                    "phase": "final_answer"
-                }
-            }))
-            turn_recs.append(make_rec("response_item", {
-                "type": "message",
-                "id": a_item_id,
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": agent_reply}],
-                "phase": "final_answer"
-            }))
-            turn_recs.append(make_rec("event_msg", {
-                "type": "task_complete",
-                "turn_id": tid,
-                "last_agent_message": agent_reply
-            }))
-
-        turn_text = "\n".join(turn_recs) + "\n"
-        turn_bytes = turn_text.encode('utf-8')
-        turn_end_offset = turn_start_offset + len(turn_bytes)
-        turn_end_ord = curr_ord - 1
-
-        appended_turns_meta.append({
-            'thread_id': tgt_id,
-            'turn_id': tid,
-            'rollout_ordinal': turn_start_ord,
-            'status': 'completed',
-            'error_json': None,
-            'started_at': now_ts,
-            'completed_at': now_ts,
-            'duration_ms': None,
-            'first_user_item_id': u_item_id,
-            'final_agent_item_id': a_item_id if agent_reply else None,
-            'rollout_byte_offset': turn_start_offset,
-            'rollout_end_ordinal': turn_end_ord,
-            'rollout_end_byte_offset': turn_end_offset
-        })
-
-        appended_items_meta.append({
-            'thread_id': tgt_id,
-            'turn_id': tid,
-            'item_id': u_item_id,
-            'rollout_ordinal': turn_start_ord + 3,
-            'created_at_ms': now_ms,
-            'item_json': json.dumps({"type":"userMessage","id":u_item_id,"content":[{"type":"text","text":combined_user}]}),
-            'item_type': 'userMessage',
-            'updated_at_ordinal': turn_start_ord + 3
-        })
-
-        if agent_reply:
-            appended_items_meta.append({
-                'thread_id': tgt_id,
-                'turn_id': tid,
-                'item_id': a_item_id,
-                'rollout_ordinal': turn_start_ord + 4,
-                'created_at_ms': now_ms,
-                'item_json': json.dumps({"type":"agentMessage","id":a_item_id,"text":agent_reply}),
-                'item_type': 'agentMessage',
-                'updated_at_ordinal': turn_start_ord + 4
-            })
-
-        records_to_append.append(turn_text)
-        curr_offset = turn_end_offset
 
     # 5. Append records to target rollout file
     with open(tgt_rollout, "a", encoding="utf-8") as f:
@@ -305,7 +181,10 @@ def sync_all_pairs(codex_home):
     """Scan and run bidirectional sync on all registered pairs in session_manager.sqlite."""
     paths = CodexPaths(codex_home)
     from .mapping import auto_seed_existing_pairs, get_all_pairs, update_last_synced
+    from .discovery import discover_and_pair_unmapped_threads
+
     auto_seed_existing_pairs(codex_home)
+    discover_and_pair_unmapped_threads(codex_home)
     pairs = get_all_pairs(paths.mapping_db, active_only=True)
 
     if not pairs:
