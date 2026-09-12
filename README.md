@@ -82,6 +82,52 @@ codex-session-manager/
 
 ---
 
+## ⚙️ Initial Setup: DeepSeek Configuration (First-Time Use)
+
+If you are using DeepSeek with Codex for the first time or setting up a new environment, you must configure DeepSeek as a custom provider in your Codex configuration file according to the [Official DeepSeek Codex Integration Guide](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/).
+
+### Step 1: Obtain a DeepSeek API Key
+1. Sign up or log in at the [DeepSeek Platform](https://platform.deepseek.com/).
+2. Navigate to **API Keys** and generate an API key (`sk-...`).
+
+### Step 2: Configure `config.toml`
+Locate your Codex configuration file:
+- **Windows**: `%USERPROFILE%\.codex\config.toml` (typically `C:\Users\<YourUsername>\.codex\config.toml`)
+- **macOS / Linux**: `~/.codex/config.toml`
+
+Open `config.toml` in your text editor and append the following configuration block at the bottom:
+
+```toml
+[model_providers.deepseek]
+name = "deepseek"
+base_url = "https://api.deepseek.com/"
+wire_api = "responses"
+experimental_bearer_token = "<YOUR_DEEPSEEK_API_KEY>"
+```
+
+> **Note:** Replace `<YOUR_DEEPSEEK_API_KEY>` with your actual DeepSeek secret key (e.g. `sk-9aa0...`).
+
+### Step 3: Run Pre-Flight Diagnostics
+Validate your setup using the built-in doctor command:
+
+```bash
+python codex_migrator.py doctor
+```
+
+If configured correctly, the check confirms readiness:
+```
+=== Codex Session Manager: Diagnostics & System Check ===
+Codex Home : C:\Users\<Username>\.codex
+Config TOML: C:\Users\<Username>\.codex\config.toml (Exists: True)
+
+[DeepSeek API Configuration]
+  Status     : [OK] Configured and ready to use
+```
+
+If the block or token is missing, the doctor will display an alert banner with direct instructions.
+
+---
+
 ## 🚀 Quick Start & CLI Usage
 
 ### 1-Click Scripts (Recommended for Daily Use)
