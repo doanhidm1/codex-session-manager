@@ -11,6 +11,15 @@ from codex_manager.rollout import make_wire_record
 from codex_manager.mapping import get_all_pairs, auto_seed_existing_pairs
 from codex_manager.switch import switch_provider
 
+from codex_manager.provider import (
+    is_supported_provider,
+    assert_supported_provider,
+    check_deepseek_config,
+    save_provider_settings,
+    get_last_provider_settings,
+    update_config_toml
+)
+
 class TestCodexManagerSmoke(unittest.TestCase):
     def test_config_resolution(self):
         home = get_default_codex_home()
@@ -18,6 +27,7 @@ class TestCodexManagerSmoke(unittest.TestCase):
         paths = CodexPaths(home)
         self.assertTrue(paths.state_db.endswith("state_5.sqlite"))
         self.assertTrue(paths.mapping_db.endswith("session_manager.sqlite"))
+        self.assertTrue(paths.config_toml.endswith("config.toml"))
 
     def test_rollout_serialization(self):
         rec_str = make_wire_record("test_type", {"key": "value"}, 1)
@@ -40,6 +50,25 @@ class TestCodexManagerSmoke(unittest.TestCase):
         auto_seed_existing_pairs(home)
         pairs = get_all_pairs(paths.mapping_db)
         self.assertIsInstance(pairs, list)
+
+    def test_provider_support(self):
+        self.assertTrue(is_supported_provider("deepseek"))
+        self.assertTrue(is_supported_provider("openai"))
+        self.assertFalse(is_supported_provider("anthropic"))
+        self.assertFalse(is_supported_provider("gemini"))
+        self.assertFalse(is_supported_provider("ollama"))
+        with self.assertRaises(ValueError):
+            assert_supported_provider("unsupported_provider")
+
+    def test_provider_settings_persistence(self):
+        home = get_default_codex_home()
+        paths = CodexPaths(home)
+        save_provider_settings(paths.mapping_db, "openai", "gpt-5.6-luna", "max")
+        m, e = get_last_provider_settings(paths.mapping_db, "openai")
+        self.assertEqual(m, "gpt-5.6-luna")
+        self.assertEqual(e, "max")
+        # Restore test settings
+        save_provider_settings(paths.mapping_db, "openai", "gpt-5.6-terra", "high")
 
 if __name__ == '__main__':
     unittest.main()

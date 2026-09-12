@@ -13,20 +13,24 @@ A zero-dependency, cross-platform CLI tool and Python library for managing, migr
 
 1. **Provider Switching with Automatic Incremental Sync:**
    - Switching provider focus (e.g. `switch deepseek` or `switch openai`) automatically syncs all newly generated conversation turns **before** toggling sidebar visibility. You never have to remember to run manual syncs!
-2. **Dedicated Mapping Database (`session_manager.sqlite`):**
+2. **Model & Reasoning Effort Preservation:**
+   - Automatically remembers and restores the exact model and reasoning effort settings last used for each provider (e.g., if you switch OpenAI to `gpt-5.6-luna` with `max` effort, and DeepSeek to `deepseek-flash` with `max` effort or `deepseek-pro`, your settings are preserved across switches and restored into `config.toml`).
+3. **DeepSeek Pre-flight Configuration Detection:**
+   - Detects whether DeepSeek is configured in `~/.codex/config.toml` according to the [Official DeepSeek Codex Integration Guide](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/). Warns with clear, copy-pasteable instructions if missing.
+4. **Dedicated Mapping Database (`session_manager.sqlite`):**
    - Explicitly persists mapped pairs `(openai_thread_id <---> deepseek_thread_id)` along with timestamps (`last_synced_at`).
    - Eliminates ambiguity and brittle name matching.
-3. **Safe Unarchiving (No Accidental Restorations):**
+5. **Safe Unarchiving (No Accidental Restorations):**
    - When switching provider modes, the manager **only** alters the archive status of thread IDs explicitly registered in the mapping database.
    - Any older sessions or abandoned projects that you manually archived remain 100% archived and undisturbed.
-4. **Non-Destructive Append-Only Two-Way Sync:**
+6. **Non-Destructive Append-Only Two-Way Sync:**
    - Inspects and reconciles turn identifiers across paired sessions.
    - Only appends missing conversation turns. Existing turns are never overwritten, modified, or truncated.
    - Automatically generates timestamped backup snapshots before performing any modifications.
-5. **Zero External Dependencies:**
+7. **Zero External Dependencies:**
    - Built entirely using the Python 3 standard library (`sqlite3`, `json`, `uuid`, `time`, `os`, `shutil`, `sys`, `re`).
    - Requires no `pip install` or external wheel compilation. Works immediately on any standard Python 3 installation.
-6. **Cross-Platform Compatibility:**
+8. **Cross-Platform Compatibility:**
    - Seamlessly resolves Codex data directories across Windows (`%USERPROFILE%\.codex`), macOS (`~/.codex`), and Linux (`~/.codex`), with support for custom `CODEX_HOME` environment variables.
 
 ---
@@ -117,8 +121,11 @@ python codex_migrator.py pair add <openai_id_or_name> <deepseek_id_or_name> [opt
 python codex_migrator.py pair remove <name_or_id>
 ```
 
-### 6. Listing and Diagnostics
+### 6. Diagnostics and Listing
 ```bash
+# Run pre-flight checks (DeepSeek configuration, database health, model settings)
+python codex_migrator.py doctor
+
 # List all threads across state_5.sqlite
 python codex_migrator.py list
 

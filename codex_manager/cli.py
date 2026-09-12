@@ -21,6 +21,7 @@ Main commands:
     pairs                          List all mapped session pairs from mapping database
     pair add <oai> <ds> [name]     Register a new session pair in mapping database
     pair remove <name|id>          Remove a session pair from mapping database
+    check, doctor                  Diagnose environment, DeepSeek config, and preserved model settings
     list                           List recent threads in state_5.sqlite
     migrate <id> [provider]        Clone a session to target provider (default: deepseek)
     rollback [id]                  Undo a cloned session from latest backup snapshot
@@ -115,6 +116,30 @@ def main():
         s_id = args[1]
         tgt = args[2] if len(args) > 2 else 'deepseek'
         migrate_thread(s_id, tgt, codex_home)
+    elif cmd in ('check', 'doctor', 'status'):
+        import os
+        from .provider import check_deepseek_config, get_last_provider_settings, detect_current_provider_settings, DEEPSEEK_DOCS_URL
+        print("\n=== Codex Session Manager: Diagnostics & System Check ===")
+        print(f"Codex Home : {paths.codex_home}")
+        print(f"Config TOML: {paths.config_toml} (Exists: {os.path.exists(paths.config_toml)})")
+        print(f"State DB   : {paths.state_db} (Exists: {os.path.exists(paths.state_db)})")
+        print(f"History DB : {paths.th_db} (Exists: {os.path.exists(paths.th_db)})")
+        print(f"Mapping DB : {paths.mapping_db} (Exists: {os.path.exists(paths.mapping_db)})")
+
+        ds_ok, ds_reason = check_deepseek_config(codex_home)
+        print(f"\n[DeepSeek API Configuration]")
+        if ds_ok:
+            print("  Status     : [OK] Configured and ready to use")
+        else:
+            print(f"  Status     : [WARNING] Not configured ({ds_reason})")
+            print(f"  Setup Guide: {DEEPSEEK_DOCS_URL}")
+
+        oai_m, oai_e = get_last_provider_settings(paths.mapping_db, 'openai')
+        ds_m, ds_e = get_last_provider_settings(paths.mapping_db, 'deepseek')
+        print(f"\n[Preserved Model Settings]")
+        print(f"  OpenAI   : model='{oai_m}', reasoning_effort='{oai_e}'")
+        print(f"  DeepSeek : model='{ds_m}', reasoning_effort='{ds_e}'")
+        print("=========================================================\n")
     elif cmd == 'rollback':
         t_id = args[1] if len(args) > 1 else ''
         rollback_thread(t_id, codex_home)

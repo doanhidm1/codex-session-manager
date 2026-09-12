@@ -9,19 +9,37 @@ from .backup import create_session_backup, rollback_session_backup
 from .rollout import extract_turns_from_sqlite, extract_turns_from_rollout, build_migrated_rollout_file
 from .projection import build_thread_projection
 from .mapping import register_pair
+from .provider import (
+    is_supported_provider,
+    warn_if_deepseek_unconfigured,
+    get_last_provider_settings,
+    SUPPORTED_PROVIDERS
+)
 
 def migrate_thread(source_thread_id, target_provider, codex_home):
     """
-    Orchestrate migration/cloning of a thread to a target provider (e.g. DeepSeek):
-    1. Validate source thread and file existence.
-    2. Snapshot backup of source thread and rollout.
-    3. Extract conversation turns (preserving faithful structure).
-    4. Write target rollout JSONL (inheriting genuine source metadata without fake prompts).
-    5. Build thread projection cache in thread_history_1.sqlite.
-    6. Insert new thread record in state_5.sqlite.
-    7. Register in local_thread_catalog and session_manager.sqlite.
+    Safely clone an existing conversation thread into a new provider session:
+    - Validates supported provider (deepseek/openai).
+    - Checks if DeepSeek is configured in config.toml.
+    - Preserves model settings and reasoning effort from previous selections.
+    - Generates full backup snapshot before mutating database.
+    - Builds wire-compliant rollout JSONL.
+    - Projects byte offsets into thread_history_1.sqlite.
+    - Inserts new row into state_5.sqlite and records mapping pair in session_manager.sqlite.
     """
     paths = CodexPaths(codex_home)
+    if not os.path.exists(paths.state_db):
+        print(f"ERROR: Database does not exist: {paths.state_db}")
+        return False
+
+    target_provider = target_provider.lower().strip()
+    if not is_supported_provider(target_provider):
+        print(f"ERROR: Target provider '{target_provider}' is not supported. Currently supported: {', '.join(SUPPORTED_PROVIDERS)}.")
+        return False
+
+    if target_provider == 'deepseek':
+        warn_if_deepseek_unconfigured(codex_home)
+
     conn = get_connection(paths.state_db, timeout=15.0)
     cursor = conn.cursor()
 
@@ -58,6 +76,9 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         old_name = thread_data.get('name') or ''
         old_title = thread_data.get('title') or 'New Chat'
 
+        target_model, target_effort = get_last_provider_settings(paths.mapping_db, target_provider)
+        new_model = target_model
+
         if target_provider == 'deepseek':
             if old_name:
                 clean_name = old_name.replace(" (ds)", "").replace("(ds)", "").strip()
@@ -69,7 +90,6 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
             if clean_title.startswith("[DS] "): clean_title = clean_title[5:]
             if clean_title.startswith("[OAI] "): clean_title = clean_title[6:]
             new_title = f"[DS] {clean_title}"
-            new_model = "deepseek-flash"
         else:
             if old_name:
                 new_name = old_name.replace(" (ds)", "").replace("(ds)", "").strip()
@@ -80,7 +100,6 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
             if clean_title.startswith("[DS] "): clean_title = clean_title[5:]
             if clean_title.startswith("[OAI] "): clean_title = clean_title[6:]
             new_title = clean_title
-            new_model = "gpt-5.6-sol"
 
         date_parts = time.strftime("%Y/%m/%d").split("/")
         out_dir = os.path.join(paths.sessions_dir, *date_parts)
@@ -118,6 +137,8 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         new_thread['rollout_path'] = out_rollout
         new_thread['model_provider'] = target_provider
         new_thread['model'] = new_model
+        if target_effort:
+            new_thread['reasoning_effort'] = thread_data.get('reasoning_effort') or target_effort
         new_thread['created_at'] = now_ts
         new_thread['updated_at'] = now_ts
         new_thread['created_at_ms'] = now_ms

@@ -5,17 +5,41 @@ from .db import get_connection
 from .mapping import auto_seed_existing_pairs, get_all_pairs, update_last_synced
 from .sync import sync_threads
 
+from .provider import (
+    is_supported_provider,
+    warn_if_deepseek_unconfigured,
+    switch_provider_settings,
+    SUPPORTED_PROVIDERS
+)
+
 def switch_provider(target_mode, codex_home, auto_sync=True):
     """
     Switch active provider on PC and Mobile:
-    1. Automatically synchronizes new conversational turns between paired sessions.
-    2. Toggles sidebar visibility by updating 'archived' state in state_5.sqlite ONLY for registered pairs.
-    3. Guarantees that any manually archived sessions outside the pairs are NEVER touched.
+    1. Validates supported provider (OpenAI and DeepSeek).
+    2. Warns if DeepSeek API is not yet configured in config.toml.
+    3. Preserves current model settings & restores target provider's last used settings.
+    4. Automatically synchronizes new conversational turns between paired sessions.
+    5. Toggles sidebar visibility by updating 'archived' state in state_5.sqlite ONLY for registered pairs.
+    6. Guarantees that any manually archived sessions outside the pairs are NEVER touched.
     """
     paths = CodexPaths(codex_home)
     if not os.path.exists(paths.state_db):
         print(f"ERROR: Database does not exist: {paths.state_db}")
         return False
+
+    mode = target_mode.lower().strip()
+    if mode not in ('deepseek', 'openai', 'all', 'show'):
+        print(f"ERROR: Provider '{mode}' is not supported. Currently, only 'deepseek' and 'openai' (or 'all') are supported.")
+        return False
+
+    # Check DeepSeek configuration if switching to DeepSeek
+    if mode == 'deepseek':
+        warn_if_deepseek_unconfigured(codex_home)
+
+    # 0. Preserve outgoing model settings & restore incoming model settings in config.toml
+    if mode in ('deepseek', 'openai'):
+        restored_model, restored_effort = switch_provider_settings(codex_home, mode)
+        print(f"[*] Configuration updated in config.toml: provider='{mode}', model='{restored_model}', reasoning_effort='{restored_effort}'")
 
     auto_seed_existing_pairs(codex_home)
     pairs = get_all_pairs(paths.mapping_db, active_only=True)
@@ -23,11 +47,6 @@ def switch_provider(target_mode, codex_home, auto_sync=True):
     if not pairs:
         print("[i] No session pairs found in mapping database.")
         return True
-
-    mode = target_mode.lower().strip()
-    if mode not in ('deepseek', 'openai', 'all', 'show'):
-        print(f"ERROR: Invalid provider: '{mode}'. Please choose 'deepseek', 'openai', or 'all'.")
-        return False
 
     # 1. Automatic Sync before switching
     if auto_sync:
