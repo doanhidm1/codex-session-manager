@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -142,6 +143,11 @@ def list_pairs_table(codex_home):
 
 def register_migrated_session(paths, new_id, new_name, clean_cwd, target_prov, old_name, clean_title, src_id, now_ts):
     """Register newly cloned session in local_thread_catalog and session_manager.sqlite."""
+    clean_pname = re.sub(r"\s*\(ds\)$", "", new_name).strip() if target_prov == "deepseek" else new_name
+    ds_name = f"{clean_pname} (ds)"
+    o_name, d_name = (clean_pname, ds_name)
+    o_id, d_id = (src_id, new_id) if target_prov == "deepseek" else (new_id, src_id)
+
     if os.path.exists(paths.cat_db):
         try:
             with sqlite3.connect(paths.cat_db, timeout=5.0) as cat_conn:
@@ -152,13 +158,14 @@ def register_migrated_session(paths, new_id, new_name, clean_cwd, target_prov, o
                     "VALUES ('local', ?, ?, ?, ?, ?, 'local', ?, 'user', ?)",
                     (new_id, new_name, now_ts, now_ts, clean_cwd, target_prov, now_ts),
                 )
+                cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (o_name, o_id))
+                cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (d_name, d_id))
                 cat_conn.commit()
         except Exception:
             pass
     try:
-        pname = old_name or clean_title.replace("[DS] ", "").strip()
-        o_id, d_id = (src_id, new_id) if target_prov == "deepseek" else (new_id, src_id)
-        register_pair(paths.mapping_db, pname, o_id, d_id)
+        register_pair(paths.mapping_db, clean_pname, o_id, d_id)
     except Exception:
         pass
+
 

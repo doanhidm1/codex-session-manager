@@ -1,23 +1,22 @@
 import os
+import time
 
 from .config import CodexPaths
 from .db import get_connection
 
 
-def discover_and_pair_unmapped_threads(codex_home):
+def discover_and_pair_unmapped_threads(codex_home, source_provider_filter=None):
     """
     Find any newly created active threads in state_5.sqlite that do not yet have
     a counterpart in session_manager.sqlite, auto-clone the twin session,
     and register the new pair.
-
-    Ensures that when a user starts a brand new chat directly in DeepSeek or OpenAI,
-    running sync or switch will seamlessly auto-pair and sync without manual intervention.
     """
     paths = CodexPaths(codex_home)
     if not os.path.exists(paths.state_db) or not os.path.exists(paths.mapping_db):
         return []
 
     from .mapping import get_all_pairs
+
     pairs = get_all_pairs(paths.mapping_db, active_only=False)
     known_ids = set()
     for p in pairs:
@@ -27,20 +26,26 @@ def discover_and_pair_unmapped_threads(codex_home):
     conn = get_connection(paths.state_db, timeout=5.0)
     cur = conn.cursor()
     unmapped = []
+    cutoff_ts = int(time.time()) - 86400 * 2
     try:
         rows = cur.execute(
-            "SELECT id, name, title, model_provider FROM threads "
-            "WHERE archived = 0 ORDER BY updated_at ASC"
+            "SELECT id, name, title, model_provider, updated_at FROM threads WHERE archived = 0 ORDER BY updated_at ASC"
         ).fetchall()
         for r in rows:
-            tid, name, title, prov = r
-            prov_norm = (prov or 'openai').lower().strip()
-            if tid not in known_ids and prov_norm in ('openai', 'deepseek'):
+            tid, name, title, prov, u_at = r
+            prov_norm = (prov or "openai").lower().strip()
+            if source_provider_filter and prov_norm != source_provider_filter.lower().strip():
+                continue
+            if prov_norm == "openai" and u_at and u_at < cutoff_ts:
+                continue
+            if tid not in known_ids and prov_norm in ("openai", "deepseek"):
                 unmapped.append((tid, name, title, prov_norm))
+
     except Exception:
         pass
     finally:
         conn.close()
+
 
     if not unmapped:
         return []

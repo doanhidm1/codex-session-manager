@@ -118,31 +118,42 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
                 sync_threads(d_id, o_id, codex_home, force=force)
             update_last_synced(paths.mapping_db, pair_id)
 
-    # 2. Update archived status in state_5.sqlite ONLY for registered IDs
+    # 2. Update archived status & sync names in state_5.sqlite and local_thread_catalog
     conn = get_connection(paths.state_db, timeout=10.0)
     cur = conn.cursor()
-    updated = 0
+    cat_conn = sqlite3.connect(paths.cat_db, timeout=5.0) if os.path.exists(paths.cat_db) else None
 
     for p in pairs:
-        pair_id, name, o_id, d_id, cat, lsync, is_act = p
+        _, name, o_id, d_id, _, _, _ = p
+        clean = re.sub(r"\s*\(ds\)$", "", name).strip()
+        ds_name = f"{clean} (ds)"
+        cur.execute("UPDATE threads SET name = ? WHERE id = ? AND (name IS NULL OR name != ?)", (clean, o_id, clean))
+        cur.execute("UPDATE threads SET name = ? WHERE id = ? AND (name IS NULL OR name != ?)", (ds_name, d_id, ds_name))
         if mode == "deepseek":
             cur.execute("UPDATE threads SET archived = 1 WHERE id = ? AND archived = 0", (o_id,))
-            updated += cur.rowcount
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (d_id,))
-            updated += cur.rowcount
         elif mode == "openai":
             cur.execute("UPDATE threads SET archived = 1 WHERE id = ? AND archived = 0", (d_id,))
-            updated += cur.rowcount
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (o_id,))
-            updated += cur.rowcount
         elif mode in ("all", "show"):
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (o_id,))
-            updated += cur.rowcount
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (d_id,))
-            updated += cur.rowcount
+        if cat_conn:
+            try:
+                cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (clean, o_id))
+                cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (ds_name, d_id))
+            except Exception:
+                pass
 
     conn.commit()
     conn.close()
+    if cat_conn:
+        try:
+            cat_conn.commit()
+            cat_conn.close()
+        except Exception:
+            pass
+
 
     # 3. Save active provider in mapping settings
     try:

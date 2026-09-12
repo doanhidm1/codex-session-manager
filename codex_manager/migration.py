@@ -106,7 +106,10 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
             new_name = clean_name
             new_title = clean_title
             if source_prov == "deepseek":
-                cursor.execute("UPDATE threads SET name = ? WHERE id = ?", (f"{clean_name} (ds)", source_thread_id))
+                cursor.execute(
+                    "UPDATE threads SET name = ?, title = ? WHERE id = ?",
+                    (f"{clean_name} (ds)", f"[DS] {clean_title}", source_thread_id),
+                )
 
         date_parts = time.strftime("%Y/%m/%d").split("/")
         out_dir = os.path.join(paths.sessions_dir, *date_parts)
