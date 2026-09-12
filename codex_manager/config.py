@@ -1,5 +1,5 @@
 import os
-import sys
+
 
 def normalize_path(p):
     """Normalize file paths across Windows, macOS, and Linux."""
@@ -14,17 +14,17 @@ def get_default_codex_home():
     env_home = os.environ.get("CODEX_HOME")
     if env_home and os.path.isdir(env_home):
         return normalize_path(os.path.abspath(env_home))
-        
+
     default_home = os.path.expanduser("~/.codex")
     if os.path.isdir(default_home):
         return normalize_path(os.path.abspath(default_home))
-        
+
     user_prof = os.environ.get("USERPROFILE")
     if user_prof:
         cand = os.path.join(user_prof, ".codex")
         if os.path.isdir(cand):
             return normalize_path(os.path.abspath(cand))
-            
+
     return normalize_path(os.path.abspath(default_home))
 
 class CodexPaths:

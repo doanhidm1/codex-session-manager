@@ -1,10 +1,12 @@
-import os
 import json
-import time
+import os
 import shutil
 import sqlite3
+import time
+
 from .config import CodexPaths, normalize_path
 from .db import get_connection
+
 
 def create_session_backup(source_thread_id, thread_data, source_rollout, target_provider, backup_root):
     """Create a backup snapshot of a thread and its rollout file before migrating."""

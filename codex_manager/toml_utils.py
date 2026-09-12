@@ -1,7 +1,9 @@
 import os
 import re
 import shutil
+
 from .config import CodexPaths
+
 
 def read_config_toml(config_path):
     """Read config.toml content safely."""

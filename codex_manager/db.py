@@ -1,6 +1,8 @@
-import sqlite3
 import os
+import sqlite3
+
 from .config import normalize_path
+
 
 def get_connection(db_path, timeout=10.0):
     return sqlite3.connect(normalize_path(db_path), timeout=timeout)
@@ -10,7 +12,7 @@ def list_threads(state_db, limit=15):
     if not os.path.exists(state_db):
         print(f"ERROR: Database does not exist: {state_db}")
         return
-        
+
     conn = get_connection(state_db)
     cur = conn.cursor()
     rows = cur.execute(

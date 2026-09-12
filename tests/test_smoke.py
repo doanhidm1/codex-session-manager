@@ -1,24 +1,21 @@
-import unittest
 import os
 import sys
+import unittest
 
 # Ensure parent directory is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from codex_manager.config import get_default_codex_home, CodexPaths
+from codex_manager.config import CodexPaths, get_default_codex_home
 from codex_manager.db import get_connection
-from codex_manager.rollout import make_wire_record
-from codex_manager.mapping import get_all_pairs, auto_seed_existing_pairs
-from codex_manager.switch import switch_provider
-
+from codex_manager.mapping import auto_seed_existing_pairs, get_all_pairs
 from codex_manager.provider import (
-    is_supported_provider,
     assert_supported_provider,
-    check_deepseek_config,
-    save_provider_settings,
     get_last_provider_settings,
-    update_config_toml
+    is_supported_provider,
+    save_provider_settings,
 )
+from codex_manager.rollout import make_wire_record
+
 
 class TestCodexManagerSmoke(unittest.TestCase):
     def test_config_resolution(self):
@@ -74,6 +71,7 @@ class TestCodexManagerSmoke(unittest.TestCase):
         home = get_default_codex_home()
         paths = CodexPaths(home)
         from codex_manager.mapping import register_pair, remove_pair
+
         register_pair(paths.mapping_db, "UnitTestPair", "openai-fake-1", "deepseek-fake-1")
         pairs = get_all_pairs(paths.mapping_db, active_only=False)
         found = [p for p in pairs if p[1] == "UnitTestPair"]
@@ -82,5 +80,45 @@ class TestCodexManagerSmoke(unittest.TestCase):
         self.assertEqual(found[0][3], "deepseek-fake-1")
         remove_pair(paths.mapping_db, "UnitTestPair")
 
-if __name__ == '__main__':
+    def test_active_session_and_lock_detection(self):
+        home = get_default_codex_home()
+        from codex_manager.activity import assert_no_running_sessions, check_file_and_db_locks, detect_running_sessions
+
+        is_clean, reason = check_file_and_db_locks(home)
+        self.assertTrue(is_clean, f"Lock check failed: {reason}")
+        running = detect_running_sessions(home, threshold_sec=60)
+        self.assertIsInstance(running, list)
+        self.assertTrue(assert_no_running_sessions(home))
+
+    def test_pair_health_and_force_rebuild(self):
+        home = get_default_codex_home()
+        from codex_manager.pair_health import check_thread_health, validate_pair_for_sync
+
+        # Non-existent thread should report unhealthy
+        ok, reason, _ = check_thread_health("non-existent-thread-id", home)
+        self.assertFalse(ok)
+        self.assertIn("does not exist", reason)
+
+        # Validating broken target without force should fail and indicate need for force
+        # Use a registered pair ID with a broken fake target
+        from codex_manager.mapping import get_all_pairs
+
+        paths = CodexPaths(home)
+        pairs = get_all_pairs(paths.mapping_db)
+        if pairs:
+            valid_src = pairs[0][2]
+            valid_res, status = validate_pair_for_sync(
+                valid_src, "fake-broken-target", "openai", "deepseek", home, force=False
+            )
+            self.assertFalse(valid_res)
+            self.assertEqual(status, "target_broken_need_force")
+
+    def test_sync_overwrite_import(self):
+        from codex_manager.sync_overwrite import overwrite_all_mapped_pairs, overwrite_target_from_source
+
+        self.assertTrue(callable(overwrite_target_from_source))
+        self.assertTrue(callable(overwrite_all_mapped_pairs))
+
+
+if __name__ == "__main__":
     unittest.main()

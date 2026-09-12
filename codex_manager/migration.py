@@ -1,20 +1,22 @@
+import json
 import os
+import re
 import time
 import uuid
-import json
-import sqlite3
+
+from .backup import create_session_backup, rollback_session_backup
 from .config import CodexPaths, normalize_path
 from .db import get_connection
-from .backup import create_session_backup, rollback_session_backup
-from .rollout import extract_turns_from_sqlite, extract_turns_from_rollout, build_migrated_rollout_file
+from .mapping import register_migrated_session
 from .projection import build_thread_projection
-from .mapping import register_pair
 from .provider import (
+    SUPPORTED_PROVIDERS,
+    get_last_provider_settings,
     is_supported_provider,
     warn_if_deepseek_unconfigured,
-    get_last_provider_settings,
-    SUPPORTED_PROVIDERS
 )
+from .rollout import build_migrated_rollout_file, extract_turns_from_rollout, extract_turns_from_sqlite
+
 
 def migrate_thread(source_thread_id, target_provider, codex_home):
     """
@@ -34,9 +36,7 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
 
     conn = get_connection(paths.state_db, timeout=15.0)
     cursor = conn.cursor()
-
     out_rollout = None
-    new_thread_id = None
 
     try:
         cursor.execute("SELECT * FROM threads WHERE id = ?", (source_thread_id,))
@@ -48,22 +48,26 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
 
         cols = [d[0] for d in cursor.description]
         thread_data = dict(zip(cols, row))
-        source_rollout = normalize_path(thread_data['rollout_path'])
+        source_rollout = normalize_path(thread_data["rollout_path"])
+        source_prov = (thread_data.get("model_provider") or "openai").lower().strip()
 
-        source_prov = (thread_data.get('model_provider') or 'openai').lower().strip()
         if not target_provider:
-            target_provider = 'openai' if source_prov == 'deepseek' else 'deepseek'
+            target_provider = "openai" if source_prov == "deepseek" else "deepseek"
         else:
             target_provider = target_provider.lower().strip()
             if not is_supported_provider(target_provider):
-                print(f"ERROR: Target provider '{target_provider}' is not supported. Currently supported: {', '.join(SUPPORTED_PROVIDERS)}.")
+                print(
+                    f"ERROR: Target provider '{target_provider}' is not supported. Currently supported: {', '.join(SUPPORTED_PROVIDERS)}."
+                )
                 conn.close()
                 return False
             if target_provider == source_prov:
-                target_provider = 'openai' if source_prov == 'deepseek' else 'deepseek'
-                print(f"[*] Note: Source thread is already using [{source_prov.upper()}]. Converting to opposite provider: [{target_provider.upper()}].")
+                target_provider = "openai" if source_prov == "deepseek" else "deepseek"
+                print(
+                    f"[*] Note: Source thread is already using [{source_prov.upper()}]. Converting to opposite provider: [{target_provider.upper()}]."
+                )
 
-        if target_provider == 'deepseek':
+        if target_provider == "deepseek":
             warn_if_deepseek_unconfigured(codex_home)
 
         if not os.path.exists(source_rollout):
@@ -81,33 +85,27 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         now_ts = int(time.time())
         now_ms = int(time.time() * 1000)
 
-        old_name = thread_data.get('name') or ''
-        old_title = thread_data.get('title') or 'New Chat'
+        old_name = thread_data.get("name") or ""
+        old_title = thread_data.get("title") or "New Chat"
 
         target_model, target_effort = get_last_provider_settings(paths.mapping_db, target_provider)
         new_model = target_model
 
-        if target_provider == 'deepseek':
-            if old_name:
-                clean_name = old_name.replace(" (ds)", "").replace("(ds)", "").strip()
-                new_name = f"{clean_name} (ds)"
-            else:
-                new_name = "Chat (ds)"
-
-            clean_title = old_title
-            if clean_title.startswith("[DS] "): clean_title = clean_title[5:]
-            if clean_title.startswith("[OAI] "): clean_title = clean_title[6:]
+        clean_title = re.sub(r"^\[(DS|OAI)\]\s*", "", old_title)
+        if target_provider == "deepseek":
+            clean_name = (
+                f"{old_name.replace(' (ds)', '').replace('(ds)', '').strip()} (ds)" if old_name else "Chat (ds)"
+            )
+            new_name = clean_name
             new_title = f"[DS] {clean_title}"
         else:
-            if old_name:
-                new_name = old_name.replace(" (ds)", "").replace("(ds)", "").strip()
-            else:
-                new_name = "Chat"
-
-            clean_title = old_title
-            if clean_title.startswith("[DS] "): clean_title = clean_title[5:]
-            if clean_title.startswith("[OAI] "): clean_title = clean_title[6:]
+            clean_name = (
+                old_name.replace(" (ds)", "").replace("(ds)", "").strip() if old_name else (old_title or "Chat")
+            )
+            new_name = clean_name
             new_title = clean_title
+            if source_prov == "deepseek":
+                cursor.execute("UPDATE threads SET name = ? WHERE id = ?", (f"{clean_name} (ds)", source_thread_id))
 
         date_parts = time.strftime("%Y/%m/%d").split("/")
         out_dir = os.path.join(paths.sessions_dir, *date_parts)
@@ -115,8 +113,7 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         time_fn = time.strftime("%Y-%m-%dT%H-%M-%S")
         out_filename = f"rollout-{time_fn}-{new_thread_id}.jsonl"
         out_rollout = os.path.join(out_dir, out_filename)
-
-        clean_cwd = normalize_path(thread_data.get('cwd') or os.path.expanduser("~"))
+        clean_cwd = normalize_path(thread_data.get("cwd") or os.path.expanduser("~"))
 
         # 3. Extract turns
         turns = extract_turns_from_sqlite(paths.th_db, source_thread_id, paths.codex_home)
@@ -131,7 +128,7 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
             target_provider=target_provider,
             clean_cwd=clean_cwd,
             turns=turns,
-            out_rollout_path=out_rollout
+            out_rollout_path=out_rollout,
         )
 
         # 5. Populate projection cache in thread_history_1.sqlite
@@ -139,20 +136,20 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
 
         # 6. Insert new thread record in state_5.sqlite
         new_thread = dict(thread_data)
-        new_thread['id'] = new_thread_id
-        new_thread['name'] = new_name
-        new_thread['title'] = new_title
-        new_thread['rollout_path'] = out_rollout
-        new_thread['model_provider'] = target_provider
-        new_thread['model'] = new_model
+        new_thread["id"] = new_thread_id
+        new_thread["name"] = new_name
+        new_thread["title"] = new_title
+        new_thread["rollout_path"] = out_rollout
+        new_thread["model_provider"] = target_provider
+        new_thread["model"] = new_model
         if target_effort:
-            new_thread['reasoning_effort'] = thread_data.get('reasoning_effort') or target_effort
-        new_thread['created_at'] = now_ts
-        new_thread['updated_at'] = now_ts
-        new_thread['created_at_ms'] = now_ms
-        new_thread['updated_at_ms'] = now_ms
-        new_thread['recency_at'] = now_ts
-        new_thread['recency_at_ms'] = now_ms
+            new_thread["reasoning_effort"] = thread_data.get("reasoning_effort") or target_effort
+        new_thread["created_at"] = now_ts
+        new_thread["updated_at"] = now_ts
+        new_thread["created_at_ms"] = now_ms
+        new_thread["updated_at_ms"] = now_ms
+        new_thread["recency_at"] = now_ts
+        new_thread["recency_at_ms"] = now_ms
 
         insert_cols = list(new_thread.keys())
         placeholders = ",".join(["?"] * len(insert_cols))
@@ -161,36 +158,12 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         conn.commit()
         conn.close()
 
-        # 7. Register in local_thread_catalog if available
-        if os.path.exists(paths.cat_db):
-            try:
-                with sqlite3.connect(paths.cat_db, timeout=5.0) as cat_conn:
-                    cat_cur = cat_conn.cursor()
-                    cat_cur.execute(
-                        "INSERT OR REPLACE INTO local_thread_catalog "
-                        "(host_id, thread_id, display_title, source_created_at, source_updated_at, cwd, "
-                        "source_kind, model_provider, thread_source, source_recency_at) "
-                        "VALUES ('local', ?, ?, ?, ?, ?, 'local', ?, 'user', ?)",
-                        (new_thread_id, new_name, now_ts, now_ts, clean_cwd, target_provider, now_ts)
-                    )
-                    cat_conn.commit()
-            except Exception:
-                pass
+        # 7. Register in catalog & mapping DB
+        register_migrated_session(
+            paths, new_thread_id, new_name, clean_cwd, target_provider, old_name, clean_title, source_thread_id, now_ts
+        )
 
-        # 8. Register in dedicated session_manager.sqlite mapping DB
-        try:
-            pair_name = old_name or clean_title.replace("[DS] ", "").strip()
-            if target_provider == 'deepseek':
-                o_id = source_thread_id
-                d_id = new_thread_id
-            else:
-                o_id = new_thread_id
-                d_id = source_thread_id
-            register_pair(paths.mapping_db, pair_name, o_id, d_id)
-        except Exception:
-            pass
-
-        # 9. Update backup metadata
+        # 8. Update backup metadata
         with open(backup_meta_file, "r", encoding="utf-8") as f:
             bm = json.load(f)
         bm["created_thread_id"] = new_thread_id
@@ -205,10 +178,13 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         conn.rollback()
         conn.close()
         if out_rollout and os.path.exists(out_rollout):
-            try: os.remove(out_rollout)
-            except Exception: pass
+            try:
+                os.remove(out_rollout)
+            except Exception:
+                pass
         print(f"ERROR: {e}")
         return False
+
 
 def rollback_thread(target_id, codex_home):
     """Roll back and undo a migrated session from backup snapshot."""

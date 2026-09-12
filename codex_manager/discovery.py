@@ -1,7 +1,8 @@
 import os
-import sqlite3
+
 from .config import CodexPaths
 from .db import get_connection
+
 
 def discover_and_pair_unmapped_threads(codex_home):
     """

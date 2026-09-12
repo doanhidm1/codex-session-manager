@@ -1,8 +1,10 @@
-import sqlite3
 import os
+import sqlite3
 import time
 import uuid
+
 from .config import CodexPaths, normalize_path
+
 
 def init_mapping_db(mapping_db_path):
     """Ensure session_manager.sqlite exists and has proper schema."""

@@ -1,8 +1,10 @@
 import json
-import time
 import os
 import sqlite3
+import time
+
 from .config import normalize_path
+
 
 def build_thread_projection(rollout_path, thread_id, th_db):
     """

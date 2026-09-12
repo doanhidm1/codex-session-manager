@@ -17,3 +17,8 @@ Thumbs.db
 # Backup folders generated at runtime
 backup-sessions/
 *.bak
+
+# Tool & Linter Caches
+.ruff_cache/
+.pytest_cache/
+

@@ -1,11 +1,11 @@
 import json
-import uuid
-import time
 import os
 import re
 import sqlite3
+import time
+import uuid
 from collections import OrderedDict
-from .config import normalize_path
+
 
 def extract_turns_from_sqlite(th_db, source_thread_id, codex_home):
     """
@@ -23,15 +23,15 @@ def extract_turns_from_sqlite(th_db, source_thread_id, codex_home):
         cur = conn.cursor()
 
         t_rows = cur.execute("""
-            SELECT turn_id, rollout_ordinal, started_at 
-            FROM thread_turns 
-            WHERE thread_id = ? 
+            SELECT turn_id, rollout_ordinal, started_at
+            FROM thread_turns
+            WHERE thread_id = ?
             ORDER BY rollout_ordinal
         """, (source_thread_id,)).fetchall()
 
         i_rows = cur.execute("""
-            SELECT item_id, turn_id, item_type, rollout_ordinal, item_json 
-            FROM thread_items 
+            SELECT item_id, turn_id, item_type, rollout_ordinal, item_json
+            FROM thread_items
             WHERE thread_id = ? AND item_type IN ('userMessage', 'agentMessage', 'functionCallOutput')
             ORDER BY rollout_ordinal
         """, (source_thread_id,)).fetchall()

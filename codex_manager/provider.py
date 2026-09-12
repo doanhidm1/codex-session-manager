@@ -1,9 +1,9 @@
 import os
 import re
-import shutil
 import sqlite3
+
 from .config import CodexPaths
-from .toml_utils import update_config_toml, read_config_toml
+from .toml_utils import update_config_toml
 
 SUPPORTED_PROVIDERS = ("openai", "deepseek")
 DEEPSEEK_DOCS_URL = "https://api-docs.deepseek.com/quick_start/agent_integrations/codex/"

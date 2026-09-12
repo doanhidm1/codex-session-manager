@@ -1,7 +1,8 @@
 import json
 import uuid
-import time
+
 from .rollout import make_wire_record
+
 
 def build_turn_sync_records(tid, items, curr_ord, curr_offset, tgt_id, tgt_cwd, tgt_model, now_ts, now_ms):
     """

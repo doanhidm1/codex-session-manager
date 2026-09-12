@@ -1,8 +1,7 @@
 import json
-import time
 import os
-from .config import normalize_path
-from .extractor import extract_turns_from_sqlite, extract_turns_from_rollout
+import time
+
 
 def make_wire_record(rec_type, payload, ord_num):
     """Serialize a single wire record for Codex JSONL rollout files."""

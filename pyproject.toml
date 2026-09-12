@@ -1,0 +1,28 @@
+[project]
+name = "codex-session-manager"
+version = "1.1.0"
+description = "Multi-provider session manager and bidirectional sync engine for Codex (OpenAI & DeepSeek)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "doanhidm1", email = "doanhidm1@gmail.com" }
+]
+license = { text = "MIT" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # Line length handled gracefully
+    "E402",  # Module level import not at top (needed for conditional / lazy imports)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["codex_manager"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
