@@ -138,3 +138,27 @@ def list_pairs_table(codex_home):
         d_stat = status_map.get(d_id, "Unknown")
         lsync_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(lsync)) if lsync else "Never"
         print(f"{idx:<3} | {name:<16} | {o_id} ({o_stat:<8}) | {d_id} ({d_stat:<8}) | {lsync_str}")
+
+
+def register_migrated_session(paths, new_id, new_name, clean_cwd, target_prov, old_name, clean_title, src_id, now_ts):
+    """Register newly cloned session in local_thread_catalog and session_manager.sqlite."""
+    if os.path.exists(paths.cat_db):
+        try:
+            with sqlite3.connect(paths.cat_db, timeout=5.0) as cat_conn:
+                cat_conn.execute(
+                    "INSERT OR REPLACE INTO local_thread_catalog "
+                    "(host_id, thread_id, display_title, source_created_at, source_updated_at, cwd, "
+                    "source_kind, model_provider, thread_source, source_recency_at) "
+                    "VALUES ('local', ?, ?, ?, ?, ?, 'local', ?, 'user', ?)",
+                    (new_id, new_name, now_ts, now_ts, clean_cwd, target_prov, now_ts),
+                )
+                cat_conn.commit()
+        except Exception:
+            pass
+    try:
+        pname = old_name or clean_title.replace("[DS] ", "").strip()
+        o_id, d_id = (src_id, new_id) if target_prov == "deepseek" else (new_id, src_id)
+        register_pair(paths.mapping_db, pname, o_id, d_id)
+    except Exception:
+        pass
+

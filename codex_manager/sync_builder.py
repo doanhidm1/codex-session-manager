@@ -142,3 +142,51 @@ def build_turn_sync_records(tid, items, curr_ord, curr_offset, tgt_id, tgt_cwd, 
         })
 
     return turn_text, turn_meta, item_metas, curr_ord, turn_end_offset
+
+
+def persist_sync_metadata(paths, tgt_id, turns_meta, items_meta, curr_offset, curr_ord, now_ts, now_ms):
+    """Save appended turns, items, projection, state_5 timestamps and catalog."""
+    import os
+    import sqlite3
+
+    if os.path.exists(paths.th_db):
+        conn_th = sqlite3.connect(paths.th_db, timeout=10.0)
+        cur_th = conn_th.cursor()
+        t_cols = [
+            "thread_id", "turn_id", "rollout_ordinal", "status", "error_json",
+            "started_at", "completed_at", "duration_ms", "first_user_item_id",
+            "final_agent_item_id", "rollout_byte_offset", "rollout_end_ordinal", "rollout_end_byte_offset",
+        ]
+        sql_t = f"INSERT OR REPLACE INTO thread_turns ({','.join(t_cols)}) VALUES ({','.join(['?'] * len(t_cols))})"
+        for t in turns_meta:
+            cur_th.execute(sql_t, [t[c] for c in t_cols])
+        i_cols = ["thread_id", "turn_id", "item_id", "rollout_ordinal", "created_at_ms", "item_json", "item_type", "updated_at_ordinal"]
+        sql_i = f"INSERT OR REPLACE INTO thread_items ({','.join(i_cols)}) VALUES ({','.join(['?'] * len(i_cols))})"
+        for i in items_meta:
+            cur_th.execute(sql_i, [i[c] for c in i_cols])
+        cur_th.execute(
+            "UPDATE thread_history_projection_state SET next_rollout_byte_offset = ?, next_rollout_ordinal = ? WHERE thread_id = ?",
+            (curr_offset, curr_ord, tgt_id),
+        )
+        conn_th.commit()
+        conn_th.close()
+
+    if os.path.exists(paths.state_db):
+        conn_s = sqlite3.connect(paths.state_db, timeout=10.0)
+        conn_s.cursor().execute(
+            "UPDATE threads SET updated_at = ?, updated_at_ms = ?, recency_at = ?, recency_at_ms = ? WHERE id = ?",
+            (now_ts, now_ms, now_ts, now_ms, tgt_id),
+        )
+        conn_s.commit()
+        conn_s.close()
+
+    if os.path.exists(paths.cat_db):
+        try:
+            with sqlite3.connect(paths.cat_db, timeout=5.0) as cat_conn:
+                cat_conn.cursor().execute(
+                    "UPDATE local_thread_catalog SET source_updated_at = ?, source_recency_at = ? WHERE thread_id = ?",
+                    (now_ts, now_ts, tgt_id),
+                )
+                cat_conn.commit()
+        except Exception:
+            pass

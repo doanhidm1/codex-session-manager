@@ -7,6 +7,7 @@ import uuid
 from .backup import create_session_backup, rollback_session_backup
 from .config import CodexPaths, normalize_path
 from .db import get_connection
+from .extractor import extract_turns_from_rollout, extract_turns_from_sqlite
 from .mapping import register_migrated_session
 from .projection import build_thread_projection
 from .provider import (
@@ -15,7 +16,7 @@ from .provider import (
     is_supported_provider,
     warn_if_deepseek_unconfigured,
 )
-from .rollout import build_migrated_rollout_file, extract_turns_from_rollout, extract_turns_from_sqlite
+from .rollout import build_migrated_rollout_file
 
 
 def migrate_thread(source_thread_id, target_provider, codex_home):
