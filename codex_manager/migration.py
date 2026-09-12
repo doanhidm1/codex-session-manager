@@ -32,14 +32,6 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         print(f"ERROR: Database does not exist: {paths.state_db}")
         return False
 
-    target_provider = target_provider.lower().strip()
-    if not is_supported_provider(target_provider):
-        print(f"ERROR: Target provider '{target_provider}' is not supported. Currently supported: {', '.join(SUPPORTED_PROVIDERS)}.")
-        return False
-
-    if target_provider == 'deepseek':
-        warn_if_deepseek_unconfigured(codex_home)
-
     conn = get_connection(paths.state_db, timeout=15.0)
     cursor = conn.cursor()
 
@@ -57,6 +49,22 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         cols = [d[0] for d in cursor.description]
         thread_data = dict(zip(cols, row))
         source_rollout = normalize_path(thread_data['rollout_path'])
+
+        source_prov = (thread_data.get('model_provider') or 'openai').lower().strip()
+        if not target_provider:
+            target_provider = 'openai' if source_prov == 'deepseek' else 'deepseek'
+        else:
+            target_provider = target_provider.lower().strip()
+            if not is_supported_provider(target_provider):
+                print(f"ERROR: Target provider '{target_provider}' is not supported. Currently supported: {', '.join(SUPPORTED_PROVIDERS)}.")
+                conn.close()
+                return False
+            if target_provider == source_prov:
+                target_provider = 'openai' if source_prov == 'deepseek' else 'deepseek'
+                print(f"[*] Note: Source thread is already using [{source_prov.upper()}]. Converting to opposite provider: [{target_provider.upper()}].")
+
+        if target_provider == 'deepseek':
+            warn_if_deepseek_unconfigured(codex_home)
 
         if not os.path.exists(source_rollout):
             print(f"ERROR: Rollout file does not exist: {source_rollout}")
@@ -172,7 +180,13 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         # 8. Register in dedicated session_manager.sqlite mapping DB
         try:
             pair_name = old_name or clean_title.replace("[DS] ", "").strip()
-            register_pair(paths.mapping_db, pair_name, source_thread_id, new_thread_id)
+            if target_provider == 'deepseek':
+                o_id = source_thread_id
+                d_id = new_thread_id
+            else:
+                o_id = new_thread_id
+                d_id = source_thread_id
+            register_pair(paths.mapping_db, pair_name, o_id, d_id)
         except Exception:
             pass
 

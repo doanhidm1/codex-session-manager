@@ -114,7 +114,7 @@ def main():
             print("Usage: python codex_migrator.py migrate <source_thread_id> [target_provider]")
             return 1
         s_id = args[1]
-        tgt = args[2] if len(args) > 2 else 'deepseek'
+        tgt = args[2] if len(args) > 2 else None
         migrate_thread(s_id, tgt, codex_home)
     elif cmd in ('check', 'doctor', 'status'):
         import os

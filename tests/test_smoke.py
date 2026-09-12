@@ -70,5 +70,17 @@ class TestCodexManagerSmoke(unittest.TestCase):
         # Restore test settings
         save_provider_settings(paths.mapping_db, "openai", "gpt-5.6-terra", "high")
 
+    def test_pair_registration(self):
+        home = get_default_codex_home()
+        paths = CodexPaths(home)
+        from codex_manager.mapping import register_pair, remove_pair
+        register_pair(paths.mapping_db, "UnitTestPair", "openai-fake-1", "deepseek-fake-1")
+        pairs = get_all_pairs(paths.mapping_db, active_only=False)
+        found = [p for p in pairs if p[1] == "UnitTestPair"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0][2], "openai-fake-1")
+        self.assertEqual(found[0][3], "deepseek-fake-1")
+        remove_pair(paths.mapping_db, "UnitTestPair")
+
 if __name__ == '__main__':
     unittest.main()
