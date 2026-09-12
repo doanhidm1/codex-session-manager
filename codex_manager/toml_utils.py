@@ -41,13 +41,17 @@ def update_config_toml(codex_home, updates):
     rest = text[top_end:]
 
     for k, v in updates.items():
-        pattern = rf'(?m)^{re.escape(k)}\s*=.*$'
+        pattern = rf"(?m)^{re.escape(k)}\s*=.*$\n?"
+        if v is None:
+            top_part = re.sub(pattern, "", top_part)
+            continue
         val_str = f'"{v}"' if isinstance(v, str) else str(v)
-        replacement = f'{k} = {val_str}'
+        replacement = f"{k} = {val_str}\n"
         if re.search(pattern, top_part):
             top_part = re.sub(pattern, replacement, top_part)
         else:
-            top_part = f"{replacement}\n" + top_part
+            top_part = f"{replacement}" + top_part
+
 
     with open(paths.config_toml, "w", encoding="utf-8") as f:
         f.write(top_part + rest)
