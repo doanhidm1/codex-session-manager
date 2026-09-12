@@ -130,10 +130,25 @@ If the block or token is missing, the doctor will display an alert banner with d
 
 ## 🚀 Quick Start & CLI Usage
 
-### 1-Click Scripts (Recommended for Daily Use)
-On Windows, you can simply double-click the batch scripts in `scripts/`:
+### 1-Click Automation Scripts (Recommended for Daily Use)
+
+#### Windows
+Double-click the batch scripts directly in Windows File Explorer:
 - **`scripts\switch-openai.bat`**: Syncs new DeepSeek turns to OpenAI, restores OpenAI model/reasoning settings, ensures 1M context limits, and shows OpenAI sessions in sidebar.
 - **`scripts\switch-deepseek.bat`**: Syncs new OpenAI turns to DeepSeek, restores DeepSeek model/reasoning settings, ensures 1M context limits, and shows DeepSeek sessions in sidebar.
+
+#### macOS & Linux
+Run the shell scripts directly from your terminal:
+```bash
+./scripts/switch-openai.sh
+./scripts/switch-deepseek.sh
+```
+
+> **Permission & Security FAQ for macOS/Linux:**
+> - **Do NOT use `sudo`:** The manager operates exclusively within your personal home directory (`~/.codex`). Running with `sudo` will incorrectly resolve paths to `/root/.codex` and cause file permission issues.
+> - **Is `chmod +x` required?** The scripts in this repository are already tracked with executable permissions (`100755` filemode). When cloning via `git`, they are executable immediately. If you downloaded the repository as a ZIP archive, run `chmod +x scripts/*.sh` once.
+> - **macOS Finder 1-Click Tip:** On macOS, you can make a script double-clickable from Finder by creating an alias or symlink ending in `.command` (e.g., `ln -s scripts/switch-openai.sh switch-openai.command`).
+
 
 ### Command-Line Interface (CLI)
 You can also run commands via `python codex_migrator.py <command>` or `python -m codex_manager <command>`.
