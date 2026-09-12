@@ -32,7 +32,7 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         cursor.execute("SELECT * FROM threads WHERE id = ?", (source_thread_id,))
         row = cursor.fetchone()
         if not row:
-            print(f"ERROR: Thread ID '{source_thread_id}' không tồn tại trong database.")
+            print(f"ERROR: Thread ID '{source_thread_id}' does not exist in database.")
             conn.close()
             return False
 
@@ -41,7 +41,7 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         source_rollout = normalize_path(thread_data['rollout_path'])
 
         if not os.path.exists(source_rollout):
-            print(f"ERROR: File rollout không tồn tại: {source_rollout}")
+            print(f"ERROR: Rollout file does not exist: {source_rollout}")
             conn.close()
             return False
 

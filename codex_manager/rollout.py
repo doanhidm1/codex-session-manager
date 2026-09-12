@@ -52,7 +52,7 @@ def extract_turns_from_sqlite(th_db, source_thread_id, codex_home):
             if os.path.exists(state_db):
                 with sqlite3.connect(state_db, timeout=3.0) as s_conn:
                     for s_row in s_conn.cursor().execute("SELECT id, name, title FROM threads").fetchall():
-                        thread_names[s_row[0]] = s_row[1] or s_row[2] or "Task khác"
+                        thread_names[s_row[0]] = s_row[1] or s_row[2] or "Another task"
         except Exception:
             pass
 

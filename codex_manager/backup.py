@@ -32,12 +32,12 @@ def rollback_session_backup(target_id, codex_home):
     """Roll back and undo a migrated session from backup snapshot."""
     paths = CodexPaths(codex_home)
     if not os.path.exists(paths.backup_root):
-        print("ERROR: Không tìm thấy thư mục backup-sessions.")
+        print("ERROR: backup-sessions directory not found.")
         return False
 
     dirs = sorted(os.listdir(paths.backup_root), reverse=True)
     if not dirs:
-        print("ERROR: Không có bản backup nào.")
+        print("ERROR: No backup snapshots found.")
         return False
 
     selected_dir = None
@@ -51,7 +51,7 @@ def rollback_session_backup(target_id, codex_home):
                 break
 
     if not selected_dir:
-        print(f"ERROR: Không tìm thấy backup phù hợp với ID: {target_id}")
+        print(f"ERROR: No matching backup found for ID: {target_id}")
         return False
 
     meta_p = os.path.join(selected_dir, "meta.json")
@@ -67,14 +67,14 @@ def rollback_session_backup(target_id, codex_home):
     if created_tid:
         cur.execute("DELETE FROM threads WHERE id = ?", (created_tid,))
         conn.commit()
-        print(f"[*] Đã xoá thread [{created_tid}] khỏi database.")
+        print(f"[*] Deleted thread [{created_tid}] from database.")
 
     if created_rollout and os.path.exists(created_rollout):
         try:
             os.remove(created_rollout)
-            print(f"[*] Đã xoá file rollout: {created_rollout}")
+            print(f"[*] Deleted rollout file: {created_rollout}")
         except Exception as e:
-            print(f"[!] Không thể xoá file: {e}")
+            print(f"[!] Could not delete file: {e}")
 
     conn.close()
 
@@ -106,5 +106,5 @@ def rollback_session_backup(target_id, codex_home):
         except Exception:
             pass
 
-    print(f"SUCCESS: Đã hoàn tác session [{created_tid}] từ backup: {selected_dir}")
+    print(f"SUCCESS: Successfully rolled back session [{created_tid}] from backup: {selected_dir}")
     return True

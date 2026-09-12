@@ -11,24 +11,24 @@ def print_help():
 Codex Session Manager - Multi-provider Session Management & Sync Tool
 Version: 1.1.0 (Zero-dependency, Cross-Platform)
 
-Cách sử dụng:
-    python codex_migrator.py [--codex-home <path>] <lệnh> [tham số...]
+Usage:
+    python codex_migrator.py [--codex-home <path>] <command> [arguments...]
 
-Các lệnh chính:
-    switch <deepseek|openai|all>   Tự động ĐỒNG BỘ tin nhắn mới và CHUYỂN ĐỔI chế độ hiển thị
-    sync all                       Đồng bộ hai chiều toàn bộ các cặp session (append-only)
-    sync <source> [target]         Đồng bộ turn mới từ session nguồn sang session đích
-    pairs                          Xem danh sách các cặp session đã map trong mapping database
-    pair add <oai> <ds> [name]     Thêm một cặp session vào mapping database
-    pair remove <name|id>          Xoá một cặp session khỏi mapping database
-    list                           Liệt kê các session gần đây trong state_5.sqlite
-    migrate <id> [provider]        Tạo bản sao session sang provider mới (mặc định: deepseek)
-    rollback [id]                  Hoàn tác session đã clone từ bản backup gần nhất
+Main commands:
+    switch <deepseek|openai|all>   Auto-SYNC new messages and SWITCH active sidebar provider
+    sync all                       Bidirectional sync of all registered session pairs (append-only)
+    sync <source> [target]         Incrementally sync new turns from source to target
+    pairs                          List all mapped session pairs from mapping database
+    pair add <oai> <ds> [name]     Register a new session pair in mapping database
+    pair remove <name|id>          Remove a session pair from mapping database
+    list                           List recent threads in state_5.sqlite
+    migrate <id> [provider]        Clone a session to target provider (default: deepseek)
+    rollback [id]                  Undo a cloned session from latest backup snapshot
 
-Tuỳ chọn toàn cục:
-    --codex-home <path>            Chỉ định thư mục .codex tuỳ chỉnh (mặc định tự nhận diện)
-    --no-sync                      Bỏ qua bước tự động đồng bộ khi chuyển provider (dùng với switch)
-    --help, -h                     Hiển thị hướng dẫn này
+Global options:
+    --codex-home <path>            Specify custom .codex home directory (auto-detected by default)
+    --no-sync                      Skip automatic sync step during switch
+    --help, -h                     Show this help message
 """)
 
 def main():
@@ -75,27 +75,27 @@ def main():
             list_pairs_table(codex_home)
         elif subcmd == 'add':
             if len(args) < 4:
-                print("Cách dùng: python codex_migrator.py pair add <openai_id_or_name> <deepseek_id_or_name> [custom_name]")
+                print("Usage: python codex_migrator.py pair add <openai_id_or_name> <deepseek_id_or_name> [custom_name]")
                 return 1
             o_row = resolve_thread(args[2], codex_home)
             d_row = resolve_thread(args[3], codex_home)
             if not o_row:
-                print(f"ERROR: Không tìm thấy session OpenAI: {args[2]}")
+                print(f"ERROR: OpenAI session not found: {args[2]}")
                 return 1
             if not d_row:
-                print(f"ERROR: Không tìm thấy session DeepSeek: {args[3]}")
+                print(f"ERROR: DeepSeek session not found: {args[3]}")
                 return 1
             p_name = args[4] if len(args) > 4 else (o_row[1] or o_row[2] or "Custom Pair")
             register_pair(paths.mapping_db, p_name, o_row[0], d_row[0])
-            print(f"[+] Đã đăng ký thành công cặp: [{p_name}] ({o_row[0]} <---> {d_row[0]})")
+            print(f"[+] Successfully registered pair: [{p_name}] ({o_row[0]} <---> {d_row[0]})")
         elif subcmd in ('remove', 'delete', 'rm'):
             if len(args) < 3:
-                print("Cách dùng: python codex_migrator.py pair remove <name_or_id>")
+                print("Usage: python codex_migrator.py pair remove <name_or_id>")
                 return 1
             if remove_pair(paths.mapping_db, args[2]):
-                print(f"[+] Đã xoá cặp [{args[2]}] khỏi mapping database.")
+                print(f"[+] Successfully removed pair [{args[2]}] from mapping database.")
             else:
-                print(f"[!] Không tìm thấy cặp phù hợp để xoá: {args[2]}")
+                print(f"[!] No matching pair found to remove: {args[2]}")
     elif cmd == 'sync':
         if len(args) < 2 or args[1].lower() == 'all':
             sync_all_pairs(codex_home)
@@ -110,7 +110,7 @@ def main():
             sync_threads(s_arg, t_arg, codex_home)
     elif cmd == 'migrate':
         if len(args) < 2:
-            print("Cách dùng: python codex_migrator.py migrate <source_thread_id> [target_provider]")
+            print("Usage: python codex_migrator.py migrate <source_thread_id> [target_provider]")
             return 1
         s_id = args[1]
         tgt = args[2] if len(args) > 2 else 'deepseek'
@@ -119,7 +119,7 @@ def main():
         t_id = args[1] if len(args) > 1 else ''
         rollback_thread(t_id, codex_home)
     else:
-        print(f"Lệnh không xác định: '{cmd}'")
+        print(f"Unknown command: '{cmd}'")
         print_help()
         return 1
 

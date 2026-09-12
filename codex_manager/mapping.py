@@ -115,7 +115,7 @@ def list_pairs_table(codex_home):
     pairs = get_all_pairs(paths.mapping_db, active_only=False)
 
     if not pairs:
-        print("[i] Chưa có cặp session nào được đăng ký trong mapping database.")
+        print("[i] No session pairs registered in the mapping database.")
         return
 
     # Check live status from state_5.sqlite

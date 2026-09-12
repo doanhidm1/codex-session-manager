@@ -8,7 +8,7 @@ def get_connection(db_path, timeout=10.0):
 def list_threads(state_db, limit=15):
     """Print a clean, formatted table of recent threads."""
     if not os.path.exists(state_db):
-        print(f"ERROR: Database không tồn tại: {state_db}")
+        print(f"ERROR: Database does not exist: {state_db}")
         return
         
     conn = get_connection(state_db)

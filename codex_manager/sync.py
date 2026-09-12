@@ -18,27 +18,27 @@ def sync_threads(src_arg, tgt_arg, codex_home):
     tgt_row = resolve_thread(tgt_arg, codex_home)
 
     if not src_row:
-        print(f"ERROR: Không tìm thấy source thread: {src_arg}")
+        print(f"ERROR: Source thread not found: {src_arg}")
         return False
     if not tgt_row:
-        print(f"ERROR: Không tìm thấy target thread: {tgt_arg}")
+        print(f"ERROR: Target thread not found: {tgt_arg}")
         return False
 
     src_id, src_name, src_title, src_prov, src_rollout = src_row
     tgt_id, tgt_name, tgt_title, tgt_prov, tgt_rollout = tgt_row
 
     if src_id == tgt_id:
-        print("ERROR: Source và Target là cùng một thread!")
+        print("ERROR: Source and Target are the same thread!")
         return False
 
     src_rollout = normalize_path(src_rollout)
     tgt_rollout = normalize_path(tgt_rollout)
 
     if not os.path.exists(src_rollout):
-        print(f"ERROR: File source rollout không tồn tại: {src_rollout}")
+        print(f"ERROR: Source rollout file does not exist: {src_rollout}")
         return False
     if not os.path.exists(tgt_rollout):
-        print(f"ERROR: File target rollout không tồn tại: {tgt_rollout}")
+        print(f"ERROR: Target rollout file does not exist: {tgt_rollout}")
         return False
 
     conn_th = sqlite3.connect(paths.th_db, timeout=10.0)
@@ -59,11 +59,11 @@ def sync_threads(src_arg, tgt_arg, codex_home):
     new_turn_ids = [tid for tid in src_turn_ids if tid not in tgt_turn_ids]
 
     if not new_turn_ids:
-        print(f"[i] Hai session '{src_name or src_id}' và '{tgt_name or tgt_id}' đã đồng bộ (không có turn mới nào cần append).")
+        print(f"[i] Sessions '{src_name or src_id}' and '{tgt_name or tgt_id}' are in sync (no new turns to append).")
         conn_th.close()
         return True
 
-    print(f"[*] Tìm thấy {len(new_turn_ids)} turn mới từ [{src_name or src_id}] cần nối vào [{tgt_name or tgt_id}]...")
+    print(f"[*] Found {len(new_turn_ids)} new turn(s) from [{src_name or src_id}] to append into [{tgt_name or tgt_id}]...")
 
     # 1. Backup target rollout
     timestamp_str = time.strftime("%Y%m%d_%H%M%S")
@@ -298,7 +298,7 @@ def sync_threads(src_arg, tgt_arg, codex_home):
         except Exception:
             pass
 
-    print(f"[SUCCESS] Đã append thành công {len(appended_turns_meta)} turn mới từ [{src_name or src_id}] sang [{tgt_name or tgt_id}]!")
+    print(f"[SUCCESS] Successfully appended {len(appended_turns_meta)} new turn(s) from [{src_name or src_id}] to [{tgt_name or tgt_id}]!")
     return True
 
 def sync_all_pairs(codex_home):
@@ -309,16 +309,16 @@ def sync_all_pairs(codex_home):
     pairs = get_all_pairs(paths.mapping_db, active_only=True)
 
     if not pairs:
-        print("[i] Không tìm thấy cặp session nào trong mapping database để đồng bộ.")
+        print("[i] No session pairs found in mapping database to synchronize.")
         return True
 
-    print(f"[*] Bắt đầu đồng bộ hai chiều cho tất cả {len(pairs)} cặp session đã đăng ký...")
+    print(f"[*] Starting two-way sync for all {len(pairs)} registered session pair(s)...")
     for p in pairs:
         pair_id, name, o_id, d_id, cat, lsync, is_act = p
-        print(f"\n--- Đồng bộ cặp: [{name}] (OpenAI: {o_id[:8]} <---> DeepSeek: {d_id[:8]}) ---")
+        print(f"\n--- Syncing pair: [{name}] (OpenAI: {o_id[:8]} <---> DeepSeek: {d_id[:8]}) ---")
         sync_threads(o_id, d_id, codex_home)
         sync_threads(d_id, o_id, codex_home)
         update_last_synced(paths.mapping_db, pair_id)
 
-    print("\n[+] Đã hoàn tất đồng bộ hai chiều cho toàn bộ các cặp session!")
+    print("\n[+] Bidirectional sync completed successfully for all session pairs!")
     return True

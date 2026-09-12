@@ -14,24 +14,24 @@ def switch_provider(target_mode, codex_home, auto_sync=True):
     """
     paths = CodexPaths(codex_home)
     if not os.path.exists(paths.state_db):
-        print(f"ERROR: Database không tồn tại: {paths.state_db}")
+        print(f"ERROR: Database does not exist: {paths.state_db}")
         return False
 
     auto_seed_existing_pairs(codex_home)
     pairs = get_all_pairs(paths.mapping_db, active_only=True)
 
     if not pairs:
-        print("[i] Không tìm thấy cặp session nào trong mapping database.")
+        print("[i] No session pairs found in mapping database.")
         return True
 
     mode = target_mode.lower().strip()
     if mode not in ('deepseek', 'openai', 'all', 'show'):
-        print(f"ERROR: Provider không hợp lệ: '{mode}'. Vui lòng chọn 'deepseek', 'openai', hoặc 'all'.")
+        print(f"ERROR: Invalid provider: '{mode}'. Please choose 'deepseek', 'openai', or 'all'.")
         return False
 
     # 1. Automatic Sync before switching
     if auto_sync:
-        print(f"[*] Đang tự động đồng bộ tin nhắn mới trước khi chuyển sang chế độ [{mode.upper()}]...")
+        print(f"[*] Automatically syncing new messages before switching to [{mode.upper()}] mode...")
         for p in pairs:
             pair_id, name, o_id, d_id, cat, lsync, is_act = p
             if mode == 'deepseek':
@@ -86,18 +86,18 @@ def switch_provider(target_mode, codex_home, auto_sync=True):
     except Exception:
         pass
 
-    print(f"\n[+] Đã chuyển thành công sang chế độ [{mode.upper()}]!")
-    print(f"[*] Quản lý chính xác {len(pairs)} cặp session từ mapping database:")
+    print(f"\n[+] Successfully switched to [{mode.upper()}] mode!")
+    print(f"[*] Managing {len(pairs)} session pair(s) from mapping database:")
     for p in pairs:
         pair_id, name, o_id, d_id, cat, lsync, is_act = p
         print(f"    - [{name}] (OpenAI: {o_id[:8]} <---> DeepSeek: {d_id[:8]})")
 
     if mode == 'deepseek':
-        print("[+] Trạng thái: Các session gốc OpenAI đã được ẩn an toàn. PC & Mobile CHỈ HIỆN các bản DeepSeek (ds) -> Tránh hoàn toàn việc chat nhầm!")
+        print("[+] Status: Original OpenAI sessions safely hidden on PC. PC and Mobile will ONLY display DeepSeek (ds) versions to prevent accidental chats.")
     elif mode == 'openai':
-        print("[+] Trạng thái: Các bản DeepSeek (ds) đã được ẩn. Các session gốc OpenAI hiển thị bình thường trên PC.")
+        print("[+] Status: DeepSeek (ds) sessions hidden on PC. Original OpenAI sessions are visible normally.")
     elif mode in ('all', 'show'):
-        print("[+] Trạng thái: Đang hiển thị đầy đủ tất cả các session.")
+        print("[+] Status: All sessions are now visible.")
 
     return True
 
