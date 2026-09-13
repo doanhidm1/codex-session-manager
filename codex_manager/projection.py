@@ -104,6 +104,20 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                         }
                         if tid and tid in p_turns:
                             p_turns[tid]['final_agent_item_id'] = iid
+                    elif itype_raw in ('CommandExecution', 'commandExecution'):
+                        itype = 'commandExecution'
+                        clean_item = dict(raw_item)
+                        clean_item['type'] = 'commandExecution'
+                        if 'process_id' in clean_item and 'processId' not in clean_item:
+                            clean_item['processId'] = clean_item.pop('process_id', None)
+                        if 'aggregated_output' in clean_item and 'aggregatedOutput' not in clean_item:
+                            clean_item['aggregatedOutput'] = clean_item.pop('aggregated_output', None)
+                        if 'exit_code' in clean_item and 'exitCode' not in clean_item:
+                            clean_item['exitCode'] = clean_item.pop('exit_code', None)
+                        if 'duration' in clean_item and 'durationMs' not in clean_item:
+                            clean_item['durationMs'] = clean_item.pop('duration', None)
+                        if 'parsed_cmd' in clean_item and 'commandActions' not in clean_item:
+                            clean_item['commandActions'] = clean_item.pop('parsed_cmd', None)
                     else:
                         itype = itype_raw[0].lower() + itype_raw[1:] if itype_raw else 'unknown'
                         clean_item = dict(raw_item)

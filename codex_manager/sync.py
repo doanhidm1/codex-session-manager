@@ -145,6 +145,12 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
         orig_started_at = turn_row[1] if turn_row else None
         orig_completed_at = turn_row[2] if turn_row else None
 
+        src_turn_items = cur_th.execute(
+            f"SELECT item_id, item_type, item_json FROM thread_items WHERE thread_id IN ({placeholders_s}) AND turn_id = ?",
+            src_ids + [tid],
+        ).fetchall()
+        src_items_map = {r[0]: (r[1], r[2]) for r in src_turn_items}
+
         turn_text, t_meta, i_metas, curr_ord, curr_offset = stream_turn_wire_records(
             src_rollout,
             tid,
@@ -157,6 +163,7 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
             start_offset=start_offset,
             orig_started_at=orig_started_at,
             orig_completed_at=orig_completed_at,
+            source_items_map=src_items_map,
         )
 
         if not turn_text:

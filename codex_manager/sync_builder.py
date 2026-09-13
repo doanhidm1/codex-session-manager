@@ -30,6 +30,7 @@ def stream_turn_wire_records(
     start_offset=None,
     orig_started_at=None,
     orig_completed_at=None,
+    source_items_map=None,
 ):
     """
     Stream full-fidelity conversational wire records directly from the source rollout file.
@@ -164,6 +165,7 @@ def stream_turn_wire_records(
                 itype_raw = it.get("type", "")
                 iid = it.get("id", "")
 
+                is_converted_xml = False
                 # DeepSeek API compatibility: synthetic tool call outputs must be standard user XML
                 if tgt_prov != "openai" and itype_raw == "FunctionCallOutput":
                     iname = it.get("name")
@@ -175,6 +177,7 @@ def stream_turn_wire_records(
                         it.pop("output", None)
                         it.pop("namespace", None)
                         itype_raw = "UserMessage"
+                        is_converted_xml = True
 
                 if itype_raw in ("UserMessage", "userMessage"):
                     if not first_user_item_id:
@@ -185,14 +188,38 @@ def stream_turn_wire_records(
                 clean_itype = itype_raw[0].lower() + itype_raw[1:] if itype_raw else "unknown"
                 created_ms = p.get("started_at_ms") or p.get("completed_at_ms") or rec_ts_ms
 
+                # Use pristine source item_json if available, unless it was converted for DeepSeek XML
+                if not is_converted_xml and source_items_map and iid in source_items_map:
+                    src_itype, src_ijson = source_items_map[iid]
+                    final_item_json = src_ijson
+                    final_item_type = src_itype
+                else:
+                    clean_item = dict(it)
+                    clean_item["type"] = clean_itype
+                    if clean_itype == "agentMessage" and "text" not in clean_item:
+                        clean_item["text"] = "".join(c.get("text", "") for c in it.get("content", []) if isinstance(c, dict))
+                    elif clean_itype == "commandExecution":
+                        if "process_id" in clean_item and "processId" not in clean_item:
+                            clean_item["processId"] = clean_item.pop("process_id", None)
+                        if "aggregated_output" in clean_item and "aggregatedOutput" not in clean_item:
+                            clean_item["aggregatedOutput"] = clean_item.pop("aggregated_output", None)
+                        if "exit_code" in clean_item and "exitCode" not in clean_item:
+                            clean_item["exitCode"] = clean_item.pop("exit_code", None)
+                        if "duration" in clean_item and "durationMs" not in clean_item:
+                            clean_item["durationMs"] = clean_item.pop("duration", None)
+                        if "parsed_cmd" in clean_item and "commandActions" not in clean_item:
+                            clean_item["commandActions"] = clean_item.pop("parsed_cmd", None)
+                    final_item_json = json.dumps(clean_item, ensure_ascii=False)
+                    final_item_type = clean_itype
+
                 item_metas.append({
                     "thread_id": tgt_id,
                     "turn_id": tid,
                     "item_id": iid,
                     "rollout_ordinal": rec_ord,
                     "created_at_ms": created_ms,
-                    "item_json": json.dumps(it, ensure_ascii=False),
-                    "item_type": clean_itype,
+                    "item_json": final_item_json,
+                    "item_type": final_item_type,
                     "updated_at_ordinal": rec_ord,
                 })
 
