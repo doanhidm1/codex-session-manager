@@ -56,6 +56,7 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                     tid = e_payload.get('turn_id')
                     if tid:
                         p_curr_tid = tid
+                        s_at = e_payload.get('started_at') or now_ts
                         if tid not in p_turns:
                             p_turn_order.append(tid)
                             p_turns[tid] = {
@@ -64,8 +65,8 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                                 'rollout_ordinal': ord_val,
                                 'status': 'completed',
                                 'error_json': None,
-                                'started_at': now_ts,
-                                'completed_at': now_ts,
+                                'started_at': s_at,
+                                'completed_at': s_at,
                                 'duration_ms': None,
                                 'first_user_item_id': None,
                                 'final_agent_item_id': None,
@@ -112,12 +113,14 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                         p_turns[tid]['rollout_end_ordinal'] = ord_val
                         p_turns[tid]['rollout_end_byte_offset'] = l_end
 
+                    item_created_ms = e_payload.get('started_at_ms') or e_payload.get('completed_at_ms') or now_ms
+
                     p_items.append({
                         'thread_id': thread_id,
                         'turn_id': tid,
                         'item_id': iid,
                         'rollout_ordinal': ord_val,
-                        'created_at_ms': now_ms,
+                        'created_at_ms': item_created_ms,
                         'item_json': json.dumps(clean_item, ensure_ascii=False),
                         'item_type': itype,
                         'updated_at_ordinal': ord_val
@@ -127,6 +130,13 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                     if tid and tid in p_turns:
                         p_turns[tid]['rollout_end_ordinal'] = ord_val
                         p_turns[tid]['rollout_end_byte_offset'] = l_end
+                        if e_payload.get('completed_at'):
+                            p_turns[tid]['completed_at'] = e_payload['completed_at']
+                        if e_payload.get('duration_ms'):
+                            p_turns[tid]['duration_ms'] = e_payload['duration_ms']
+                        if e_payload.get('error'):
+                            p_turns[tid]['status'] = 'failed'
+                            p_turns[tid]['error_json'] = json.dumps(e_payload['error'], ensure_ascii=False)
 
     th_conn = sqlite3.connect(normalize_path(th_db), timeout=10.0)
     th_cur = th_conn.cursor()

@@ -1,18 +1,34 @@
 import json
 import os
+import re
 import shutil
 import sqlite3
 import time
 
 from .config import CodexPaths, normalize_path
 from .db import get_connection, resolve_thread
-from .sync_builder import build_turn_sync_records, persist_sync_metadata
+from .sync_builder import build_turn_sync_records, persist_sync_metadata, stream_turn_wire_records
+
+
+def get_chained_thread_ids(thread_id, rollout_path=None):
+    """Extract all related thread IDs including forks from thread_id and rollout filename."""
+    ids = [thread_id]
+    if rollout_path:
+        found = re.findall(
+            r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+            rollout_path,
+        )
+        for fid in found:
+            if fid not in ids:
+                ids.append(fid)
+    return ids
 
 
 def sync_threads(src_arg, tgt_arg, codex_home, force=False):
     """
     Incrementally append new conversational turns from source thread to target thread.
-    If target is broken/deleted: requires --force to rebuild via full convert.
+    Preserves 100% full-fidelity turn records, images, steer messages, delegation cards,
+    scheduled task cards, and original message timestamps.
     """
     paths = CodexPaths(codex_home)
     src_row = resolve_thread(src_arg, codex_home)
@@ -39,19 +55,25 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
         print("ERROR: Source and Target are the same thread!")
         return False
 
+    src_rollout = normalize_path(src_rollout)
     tgt_rollout = normalize_path(tgt_rollout)
     conn_th = sqlite3.connect(paths.th_db, timeout=10.0)
     cur_th = conn_th.cursor()
 
+    # Support forked and multi-segment rollouts
+    src_ids = get_chained_thread_ids(src_id, src_rollout)
+    placeholders_s = ",".join(["?"] * len(src_ids))
     src_turns = cur_th.execute(
-        "SELECT turn_id FROM thread_turns WHERE thread_id = ? ORDER BY rollout_ordinal ASC",
-        (src_id,),
+        f"SELECT turn_id, MIN(rollout_ordinal) as ord FROM thread_turns WHERE thread_id IN ({placeholders_s}) GROUP BY turn_id ORDER BY ord ASC",
+        src_ids,
     ).fetchall()
     src_turn_ids = [r[0] for r in src_turns]
 
+    tgt_ids = get_chained_thread_ids(tgt_id, tgt_rollout)
+    placeholders_t = ",".join(["?"] * len(tgt_ids))
     tgt_turns = cur_th.execute(
-        "SELECT turn_id FROM thread_turns WHERE thread_id = ? ORDER BY rollout_ordinal ASC",
-        (tgt_id,),
+        f"SELECT turn_id, MIN(rollout_ordinal) as ord FROM thread_turns WHERE thread_id IN ({placeholders_t}) GROUP BY turn_id ORDER BY ord ASC",
+        tgt_ids,
     ).fetchall()
     tgt_turn_ids = set(r[0] for r in tgt_turns)
 
@@ -108,21 +130,43 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
     )
     tgt_cwd = normalize_path((tgt_model_row[1] if tgt_model_row else None) or os.path.expanduser("~"))
 
-    # 4. Extract turns and format records
+    # 4. Stream full-fidelity turn records
     appended_turns_meta = []
     appended_items_meta = []
     records_to_append = []
 
     for tid in new_turn_ids:
-        items = cur_th.execute(
-            "SELECT item_id, item_type, rollout_ordinal, item_json "
-            "FROM thread_items WHERE thread_id = ? AND turn_id = ? ORDER BY rollout_ordinal ASC",
-            (src_id, tid),
-        ).fetchall()
+        turn_row = cur_th.execute(
+            f"SELECT rollout_byte_offset, started_at, completed_at FROM thread_turns WHERE turn_id = ? AND thread_id IN ({placeholders_s}) ORDER BY rollout_ordinal ASC LIMIT 1",
+            [tid] + src_ids,
+        ).fetchone()
 
-        turn_text, t_meta, i_metas, curr_ord, curr_offset = build_turn_sync_records(
-            tid, items, curr_ord, curr_offset, tgt_id, tgt_cwd, tgt_model, now_ts, now_ms
+        start_offset = turn_row[0] if turn_row else None
+        orig_started_at = turn_row[1] if turn_row else None
+        orig_completed_at = turn_row[2] if turn_row else None
+
+        turn_text, t_meta, i_metas, curr_ord, curr_offset = stream_turn_wire_records(
+            src_rollout,
+            tid,
+            curr_ord,
+            curr_offset,
+            tgt_id,
+            tgt_cwd,
+            tgt_model,
+            tgt_prov,
+            start_offset=start_offset,
+            orig_started_at=orig_started_at,
+            orig_completed_at=orig_completed_at,
         )
+
+        if not turn_text:
+            items = cur_th.execute(
+                f"SELECT item_id, item_type, rollout_ordinal, item_json FROM thread_items WHERE thread_id IN ({placeholders_s}) AND turn_id = ? ORDER BY rollout_ordinal ASC",
+                src_ids + [tid],
+            ).fetchall()
+            turn_text, t_meta, i_metas, curr_ord, curr_offset = build_turn_sync_records(
+                tid, items, curr_ord, curr_offset, tgt_id, tgt_cwd, tgt_model, now_ts, now_ms
+            )
 
         if turn_text:
             records_to_append.append(turn_text)
@@ -132,7 +176,7 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
             cur_th.execute(
                 "INSERT OR IGNORE INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, rollout_byte_offset, rollout_end_ordinal, rollout_end_byte_offset) "
                 "VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?)",
-                (tgt_id, tid, curr_ord, now_ts, now_ts, curr_offset, curr_ord, curr_offset),
+                (tgt_id, tid, curr_ord, orig_started_at or now_ts, orig_completed_at or now_ts, curr_offset, curr_ord, curr_offset),
             )
 
     # 5. Append records to target rollout file
@@ -148,7 +192,7 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
     )
 
     print(
-        f"[SUCCESS] Successfully appended {len(appended_turns_meta)} new turn(s) from [{src_name or src_id[:8]}] to [{tgt_name or tgt_id[:8]}]!"
+        f"[SUCCESS] Successfully appended {len(appended_turns_meta)} new turn(s) with full fidelity from [{src_name or src_id[:8]}] to [{tgt_name or tgt_id[:8]}]!"
     )
     return True
 

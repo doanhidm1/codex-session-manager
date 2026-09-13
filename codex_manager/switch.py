@@ -155,6 +155,35 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
             pass
 
 
+    # 2.5 Update automations target_thread_id if matching any pair
+    # Note: Heartbeat automations must remain targeted to OpenAI threads because DeepSeek API rejects synthetic function_call_output
+    automations_dir = os.path.join(codex_home, "automations")
+    if os.path.isdir(automations_dir):
+        for root, _, files in os.walk(automations_dir):
+            for f in files:
+                if f.endswith(".toml"):
+                    fpath = os.path.join(root, f)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as af:
+                            acontent = af.read()
+                        new_content = acontent
+                        is_heartbeat = 'kind = "heartbeat"' in acontent or "kind = 'heartbeat'" in acontent
+                        for p in pairs:
+                            _, _, o_id, d_id, _, _, _ = p
+                            if is_heartbeat:
+                                # Always route heartbeat automations to OpenAI
+                                new_content = re.sub(rf'(?m)^target_thread_id\s*=\s*"{d_id}"', f'target_thread_id = "{o_id}"', new_content)
+                            else:
+                                if mode == "deepseek":
+                                    new_content = re.sub(rf'(?m)^target_thread_id\s*=\s*"{o_id}"', f'target_thread_id = "{d_id}"', new_content)
+                                elif mode == "openai":
+                                    new_content = re.sub(rf'(?m)^target_thread_id\s*=\s*"{d_id}"', f'target_thread_id = "{o_id}"', new_content)
+                        if new_content != acontent:
+                            with open(fpath, "w", encoding="utf-8") as af:
+                                af.write(new_content)
+                    except Exception:
+                        pass
+
     # 3. Save active provider in mapping settings
     try:
         m_conn = sqlite3.connect(paths.mapping_db, timeout=5.0)
