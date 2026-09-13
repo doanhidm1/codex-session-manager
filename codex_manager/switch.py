@@ -72,7 +72,7 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
 
     from .activity import assert_no_running_sessions
 
-    if not assert_no_running_sessions(codex_home):
+    if not force and not assert_no_running_sessions(codex_home, force=force):
         return False
 
     mode = target_mode.lower().strip()
@@ -129,21 +129,56 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
         ds_name = f"{clean} (ds)"
         cur.execute("UPDATE threads SET name = ? WHERE id = ? AND (name IS NULL OR name != ?)", (clean, o_id, clean))
         cur.execute("UPDATE threads SET name = ? WHERE id = ? AND (name IS NULL OR name != ?)", (ds_name, d_id, ds_name))
+
+        # Inspect pinned status from both pair members
+        cur.execute("SELECT thread_section_id, section_position, is_pinned FROM threads WHERE id = ?", (o_id,))
+        o_sec = cur.fetchone()
+        cur.execute("SELECT thread_section_id, section_position, is_pinned FROM threads WHERE id = ?", (d_id,))
+        d_sec = cur.fetchone()
+
+        sec_id = (o_sec[0] if o_sec and o_sec[0] else None) or (d_sec[0] if d_sec and d_sec[0] else None)
+        sec_pos = (o_sec[1] if o_sec and o_sec[1] is not None else None) or (d_sec[1] if d_sec and d_sec[1] is not None else None)
+        is_pin = 1 if ((o_sec and o_sec[2]) or (d_sec and d_sec[2])) else 0
+
         if mode == "deepseek":
             cur.execute("UPDATE threads SET archived = 1 WHERE id = ? AND archived = 0", (o_id,))
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (d_id,))
+            if sec_id:
+                cur.execute(
+                    "UPDATE threads SET thread_section_id = ?, section_position = ?, is_pinned = ? WHERE id = ?",
+                    (sec_id, sec_pos, is_pin, d_id),
+                )
+                cur.execute(
+                    "UPDATE threads SET thread_section_id = NULL, section_position = NULL, is_pinned = 0 WHERE id = ?",
+                    (o_id,),
+                )
         elif mode == "openai":
             cur.execute("UPDATE threads SET archived = 1 WHERE id = ? AND archived = 0", (d_id,))
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (o_id,))
+            if sec_id:
+                cur.execute(
+                    "UPDATE threads SET thread_section_id = ?, section_position = ?, is_pinned = ? WHERE id = ?",
+                    (sec_id, sec_pos, is_pin, o_id),
+                )
+                cur.execute(
+                    "UPDATE threads SET thread_section_id = NULL, section_position = NULL, is_pinned = 0 WHERE id = ?",
+                    (d_id,),
+                )
         elif mode in ("all", "show"):
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (o_id,))
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (d_id,))
+
         if cat_conn:
             try:
                 cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (clean, o_id))
                 cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (ds_name, d_id))
             except Exception:
                 pass
+
+    # Ensure any archived threads do not linger in Pinned section
+    cur.execute(
+        "UPDATE threads SET thread_section_id = NULL, section_position = NULL, is_pinned = 0 WHERE archived = 1 AND thread_section_id IS NOT NULL"
+    )
 
     conn.commit()
     conn.close()

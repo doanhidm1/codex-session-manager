@@ -44,8 +44,9 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
 
     from .activity import assert_no_running_sessions
 
-    if not assert_no_running_sessions(codex_home, force=force):
-        return False
+    if not force:
+        if not assert_no_running_sessions(codex_home, force=force):
+            return False
 
     now_ts = int(time.time())
     now_ms = int(now_ts * 1000)
@@ -63,18 +64,18 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
 
     src_ids = get_chained_thread_ids(src_id, src_rollout)
 
-    source_rollouts = [src_rollout]
-    if len(src_ids) > 1:
-        sessions_dir = paths.sessions_dir
-        for root, _, files in os.walk(sessions_dir):
-            for f in files:
-                if f.endswith(".jsonl"):
-                    f_full = normalize_path(os.path.join(root, f))
-                    if f_full not in source_rollouts:
-                        for other_id in src_ids[1:]:
-                            if other_id in f:
-                                source_rollouts.append(f_full)
-                                break
+    found_rollouts = []
+    sessions_dir = paths.sessions_dir
+    for root, _, files in os.walk(sessions_dir):
+        for f in files:
+            if f.endswith(".jsonl") and not f.endswith(".bak"):
+                for s_id in src_ids:
+                    if s_id in f:
+                        f_full = normalize_path(os.path.join(root, f))
+                        if f_full not in found_rollouts:
+                            found_rollouts.append(f_full)
+    found_rollouts.sort(key=lambda p: os.path.basename(p))
+    source_rollouts = found_rollouts if found_rollouts else [src_rollout]
 
     # 3. Build thread mapping for delegation link translation
     thread_map = {}
@@ -158,15 +159,23 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
         p["model"] = tgt_model
         p["cwd"] = tgt_cwd
 
-    first_meta["ordinal"] = 0
-    hist_mode = first_meta.get("payload", {}).get("history_mode", "default")
-    hist_base = first_meta.get("payload", {}).get("history_base")
+    p = first_meta.get("payload", {})
+    p["history_mode"] = "paginated"
+    hist_base = p.get("history_base")
+
+    base_ord = 0
+    if hist_base and isinstance(hist_base, dict) and "end_ordinal_exclusive" in hist_base:
+        base_ord = hist_base["end_ordinal_exclusive"]
+    elif first_meta.get("ordinal", 0) > 0:
+        base_ord = first_meta.get("ordinal", 0)
+
+    first_meta["ordinal"] = base_ord
 
     out_file = open(tgt_rollout, "w", encoding="utf-8")
     meta_line = json.dumps(first_meta, ensure_ascii=False) + "\n"
     out_file.write(meta_line)
     curr_offset = len(meta_line.encode("utf-8"))
-    curr_ord = 1
+    curr_ord = base_ord + 1
 
     turns_meta = []
     items_meta = []
@@ -436,7 +445,7 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
     with sqlite3.connect(paths.state_db, timeout=10.0) as conn_s:
         conn_s.cursor().execute(
             "UPDATE threads SET rollout_path = ?, updated_at = ?, updated_at_ms = ?, recency_at = ?, recency_at_ms = ?, history_mode = ? WHERE id = ?",
-            (tgt_rollout, now_ts, now_ms, now_ts, now_ms, "paginated" if hist_base else "default", tgt_id),
+            (tgt_rollout, now_ts, now_ms, now_ts, now_ms, "paginated", tgt_id),
         )
         conn_s.commit()
 
@@ -480,14 +489,19 @@ def overwrite_all_mapped_pairs(codex_home, target_provider=None, force=False):
         except Exception:
             pass
 
-    tgt_prov = target_provider or ("deepseek" if cur_prov == "openai" else "openai")
+    from .activity import assert_no_running_sessions
+    if not force and not assert_no_running_sessions(codex_home, force=force):
+        return False
+
+    tgt_prov = target_provider or "deepseek"
+    src_prov = "openai" if tgt_prov == "deepseek" else "deepseek"
     print(
-        f"[*] Full-fidelity overwrite for all {len(pairs)} pair(s) (Source: {cur_prov.upper()} -> Target: {tgt_prov.upper()})..."
+        f"[*] Full-fidelity overwrite for all {len(pairs)} pair(s) (Source: {src_prov.upper()} -> Target: {tgt_prov.upper()})..."
     )
     for p in pairs:
         _, name, o_id, d_id = p[0], p[1], p[2], p[3]
-        src_id = o_id if cur_prov == "openai" else d_id
-        dst_id = d_id if cur_prov == "openai" else o_id
+        src_id = o_id if tgt_prov == "deepseek" else d_id
+        dst_id = d_id if tgt_prov == "deepseek" else o_id
         print(f"\n--- Overwriting [{name}] ({src_id[:8]} -> {dst_id[:8]}) ---")
-        overwrite_target_from_source(src_id, dst_id, codex_home, force=force)
+        overwrite_target_from_source(src_id, dst_id, codex_home, force=True)
     return True
