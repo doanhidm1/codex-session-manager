@@ -135,6 +135,20 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
     appended_items_meta = []
     records_to_append = []
 
+    # Load thread mapping for cross-thread delegation link translation
+    thread_map = {}
+    if os.path.exists(paths.mapping_db):
+        try:
+            with sqlite3.connect(paths.mapping_db, timeout=5.0) as m_conn:
+                for row in m_conn.cursor().execute("SELECT openai_thread_id, deepseek_thread_id FROM session_pairs").fetchall():
+                    o_id, d_id = row[0], row[1]
+                    if tgt_prov == "deepseek":
+                        thread_map[o_id] = d_id
+                    elif tgt_prov == "openai":
+                        thread_map[d_id] = o_id
+        except Exception:
+            pass
+
     for tid in new_turn_ids:
         turn_row = cur_th.execute(
             f"SELECT rollout_byte_offset, started_at, completed_at FROM thread_turns WHERE turn_id = ? AND thread_id IN ({placeholders_s}) ORDER BY rollout_ordinal ASC LIMIT 1",
@@ -164,6 +178,7 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
             orig_started_at=orig_started_at,
             orig_completed_at=orig_completed_at,
             source_items_map=src_items_map,
+            thread_map=thread_map,
         )
 
         if not turn_text:

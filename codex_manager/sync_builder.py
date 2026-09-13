@@ -31,6 +31,7 @@ def stream_turn_wire_records(
     orig_started_at=None,
     orig_completed_at=None,
     source_items_map=None,
+    thread_map=None,
 ):
     """
     Stream full-fidelity conversational wire records directly from the source rollout file.
@@ -212,6 +213,11 @@ def stream_turn_wire_records(
                     final_item_json = json.dumps(clean_item, ensure_ascii=False)
                     final_item_type = clean_itype
 
+                if thread_map:
+                    for src_t, tgt_t in thread_map.items():
+                        final_item_json = final_item_json.replace(f"<source_thread_id>{src_t}</source_thread_id>", f"<source_thread_id>{tgt_t}</source_thread_id>")
+                        final_item_json = final_item_json.replace(f"<source_thread_id> {src_t} </source_thread_id>", f"<source_thread_id>{tgt_t}</source_thread_id>")
+
                 item_metas.append({
                     "thread_id": tgt_id,
                     "turn_id": tid,
@@ -250,7 +256,13 @@ def stream_turn_wire_records(
             if p.get("session_id"):
                 p["session_id"] = tgt_id
 
-        transformed_lines.append(json.dumps(rec, ensure_ascii=False) + "\n")
+        line_str = json.dumps(rec, ensure_ascii=False) + "\n"
+        if thread_map:
+            for src_t, tgt_t in thread_map.items():
+                line_str = line_str.replace(f"<source_thread_id>{src_t}</source_thread_id>", f"<source_thread_id>{tgt_t}</source_thread_id>")
+                line_str = line_str.replace(f"<source_thread_id> {src_t} </source_thread_id>", f"<source_thread_id>{tgt_t}</source_thread_id>")
+
+        transformed_lines.append(line_str)
 
     turn_text = "".join(transformed_lines)
     turn_bytes = turn_text.encode("utf-8")
