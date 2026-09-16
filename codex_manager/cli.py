@@ -1,3 +1,4 @@
+import os
 import sys
 
 from .config import CodexPaths, get_default_codex_home
@@ -25,9 +26,13 @@ Main commands:
     pair add <oai> <ds> [name]     Register a new session pair in mapping database
     pair remove <name|id>          Remove a session pair from mapping database
     check, doctor                  Diagnose environment, active sessions, and preserved settings
+    proxy [status|start|stop]      Manage DeepSeek reverse proxy daemon (port 8765)
+    reconcile                      Reconcile delegation turns so read_thread returns full responses
+    repair <name|id> [--all]       Audit and repair corrupted rollout JSONL lines & sync SQLite index
     list                           List recent threads in state_5.sqlite
     migrate <id> [provider]        Clone a session to target provider (default: deepseek)
     rollback [id]                  Undo a cloned session from latest backup snapshot
+    split <name|id> [turns]        Split session to keep recent turns (default: 500) and archive older history
 
 Global options:
     --codex-home <path>            Specify custom .codex home directory (auto-detected by default)
@@ -96,7 +101,9 @@ def main():
             list_pairs_table(codex_home)
         elif subcmd == "add":
             if len(args) < 4:
-                print("Usage: python codex_migrator.py pair add <openai_id_or_name> <deepseek_id_or_name> [custom_name]")
+                print(
+                    "Usage: python codex_migrator.py pair add <openai_id_or_name> <deepseek_id_or_name> [custom_name]"
+                )
                 return 1
             o_row = resolve_thread(args[2], codex_home)
             d_row = resolve_thread(args[3], codex_home)
@@ -142,9 +149,7 @@ def main():
             t_arg = args[2] if len(args) > 2 else ""
             if not t_arg:
                 t_arg = (
-                    s_arg.lower().replace("(ds)", "").strip()
-                    if "(ds)" in s_arg.lower()
-                    else f"{s_arg.strip()} (ds)"
+                    s_arg.lower().replace("(ds)", "").strip() if "(ds)" in s_arg.lower() else f"{s_arg.strip()} (ds)"
                 )
             sync_threads(s_arg, t_arg, codex_home, force=force)
     elif cmd == "migrate":
@@ -154,9 +159,25 @@ def main():
         s_id = args[1]
         tgt = args[2] if len(args) > 2 else None
         migrate_thread(s_id, tgt, codex_home)
-    elif cmd in ("check", "doctor", "status"):
-        import os
+    elif cmd == "split":
+        from .split import split_thread
 
+        if len(args) < 2:
+            print("Usage: python codex_migrator.py split <thread_id_or_name> [keep_turns] [--no-pair]")
+            return 1
+        t_target = args[1]
+        keep = 500
+        pair_aware = True
+        if "--no-pair" in args:
+            args.remove("--no-pair")
+            pair_aware = False
+        if len(args) > 2:
+            try:
+                keep = int(args[2])
+            except ValueError:
+                pass
+        split_thread(t_target, keep_turns=keep, codex_home=codex_home, pair_aware=pair_aware)
+    elif cmd in ("check", "doctor", "status"):
         from .activity import print_running_status
         from .provider import (
             DEEPSEEK_DOCS_URL,
@@ -184,11 +205,95 @@ def main():
         print("\n[Preserved Model Settings]")
         print(f"  OpenAI   : model='{oai_m}', reasoning_effort='{oai_e}'")
         print(f"  DeepSeek : model='{ds_m}', reasoning_effort='{ds_e}'")
+
+        from .proxy.daemon import get_proxy_status
+
+        p_stat = get_proxy_status()
+        print("\n[DeepSeek Reverse Proxy]")
+        if p_stat["running"]:
+            print(f"  Status     : [RUNNING] Listening on {p_stat['url']} -> {p_stat['upstream']}")
+        else:
+            print("  Status     : [STOPPED] (Start with: python codex_migrator.py proxy start)")
+
         print_running_status(codex_home)
         print("=========================================================\n")
     elif cmd == "rollback":
         t_id = args[1] if len(args) > 1 else ""
         rollback_thread(t_id, codex_home)
+    elif cmd == "proxy":
+        from .proxy.daemon import get_proxy_status, start_proxy_daemon, stop_proxy_daemon
+
+        action = args[1].lower() if len(args) > 1 else "status"
+        if action == "status":
+            stat = get_proxy_status()
+            if stat["running"]:
+                print(f"[+] DeepSeek proxy is RUNNING on {stat['url']} (Upstream: {stat['upstream']})")
+            else:
+                print("[-] DeepSeek proxy is STOPPED.")
+        elif action in ("start", "up"):
+            if start_proxy_daemon():
+                print("[+] DeepSeek proxy daemon started successfully.")
+            else:
+                print("[-] Failed to start DeepSeek proxy daemon.")
+                return 1
+        elif action in ("stop", "down"):
+            if stop_proxy_daemon():
+                print("[+] DeepSeek proxy daemon stopped.")
+            else:
+                print("[-] Failed to stop DeepSeek proxy daemon.")
+                return 1
+        elif action in ("restart", "reload"):
+            stop_proxy_daemon()
+            if start_proxy_daemon():
+                print("[+] DeepSeek proxy daemon restarted successfully.")
+            else:
+                print("[-] Failed to restart DeepSeek proxy daemon.")
+                return 1
+        else:
+            print(f"Unknown proxy action '{action}'. Options: status, start, stop, restart")
+            return 1
+    elif cmd == "reconcile":
+        from .proxy.reconciler import reconcile_delegation_turns
+
+        t_filter = args[1] if len(args) > 1 else None
+        count = reconcile_delegation_turns(thread_id=t_filter)
+        print(f"[+] Reconciled {count} delegation turn(s) in SQLite.")
+    elif cmd == "repair":
+        from .repair import audit_rollout_file, repair_rollout_file, sync_session_offsets
+
+        if len(args) < 2:
+            print("Usage: python codex_migrator.py repair <thread_id_or_name> [--all]")
+            return 1
+        target = args[1]
+        t_row = resolve_thread(target, codex_home)
+        if not t_row:
+            print(f"ERROR: Session not found: {target}")
+            return 1
+        tid = t_row[0]
+        from .config import normalize_path
+
+        r_path = normalize_path(t_row[4]) if len(t_row) > 4 and t_row[4] else None
+        if not r_path or not os.path.exists(r_path):
+            print(f"ERROR: Rollout file not found for {target}: {r_path}")
+            return 1
+
+        print(f"[*] Auditing rollout for {t_row[1] or tid} ({r_path})...")
+        audit = audit_rollout_file(r_path)
+        if not audit["valid"]:
+            print(f"[!] Found {audit['broken_count']} broken line(s). Repairing...")
+            ok, msg, fixed = repair_rollout_file(r_path, backup=True)
+            print(f"[*] {msg}")
+        else:
+            print("[+] Rollout file is valid.")
+
+        print("[*] Synchronizing SQLite byte offsets and projection state...")
+        sync_res = sync_session_offsets(tid, r_path)
+        if sync_res["success"]:
+            print(
+                f"[+] Offsets synchronized: {sync_res['updated_turns']} turn(s) aligned, total bytes={sync_res['total_bytes']}."
+            )
+        else:
+            print(f"[-] Offset sync failed: {sync_res.get('error')}")
     else:
         print(f"Unknown command: '{cmd}'")
         print_help()

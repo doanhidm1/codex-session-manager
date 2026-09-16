@@ -12,7 +12,7 @@ def parse_iso_to_ms(iso_str):
     if not iso_str:
         return int(time.time() * 1000)
     try:
-        dt = datetime.datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
+        dt = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         return int(dt.timestamp() * 1000)
     except Exception:
         return int(time.time() * 1000)
@@ -59,7 +59,6 @@ def stream_turn_wire_records(
             f.seek(start_offset)
             # Verify we are on or near task_started for tid
             for _ in range(5):
-                pos = f.tell()
                 line = f.readline()
                 if not line:
                     break
@@ -100,7 +99,6 @@ def stream_turn_wire_records(
 
         # Collect subsequent records belonging to this turn until task_complete
         while True:
-            pos = f.tell()
             line = f.readline()
             if not line:
                 break
@@ -112,11 +110,6 @@ def stream_turn_wire_records(
             t = d.get("type")
             p = d.get("payload", {})
 
-            # Check if this record belongs to the turn
-            rec_tid = (
-                p.get("turn_id")
-                or p.get("internal_chat_message_metadata_passthrough", {}).get("turn_id")
-            )
             if t == "event_msg" and p.get("type") == "task_started" and p.get("turn_id") != tid:
                 # Next turn started, stop
                 break
@@ -171,7 +164,11 @@ def stream_turn_wire_records(
                 if tgt_prov != "openai" and itype_raw == "FunctionCallOutput":
                     iname = it.get("name")
                     out_str = it.get("output", "")
-                    if iname in ("automation_update", "send_message_to_thread") or "<codex_delegation>" in out_str or "<heartbeat>" in out_str:
+                    if (
+                        iname in ("automation_update", "send_message_to_thread")
+                        or "<codex_delegation>" in out_str
+                        or "<heartbeat>" in out_str
+                    ):
                         it["type"] = "UserMessage"
                         it["content"] = [{"type": "text", "text": out_str}]
                         it.pop("name", None)
@@ -198,36 +195,84 @@ def stream_turn_wire_records(
                     clean_item = dict(it)
                     clean_item["type"] = clean_itype
                     if clean_itype == "agentMessage" and "text" not in clean_item:
-                        clean_item["text"] = "".join(c.get("text", "") for c in it.get("content", []) if isinstance(c, dict))
+                        clean_item["text"] = "".join(
+                            c.get("text", "") for c in it.get("content", []) if isinstance(c, dict)
+                        )
+                    elif clean_itype == "userMessage":
+                        raw_c = clean_item.get("content", [])
+                        clean_c = []
+                        if isinstance(raw_c, list):
+                            for elem in raw_c:
+                                if isinstance(elem, dict):
+                                    et = elem.get("type")
+                                    if et in ("local_image", "localImage"):
+                                        clean_c.append(
+                                            {
+                                                "type": "localImage",
+                                                "detail": elem.get("detail", None),
+                                                "path": elem.get("path", ""),
+                                            }
+                                        )
+                                    elif et in ("local_audio", "localAudio"):
+                                        clean_c.append({"type": "localAudio", "path": elem.get("path", "")})
+                                    elif et in ("image", "input_image"):
+                                        url_val = elem.get("url") or elem.get("image_url") or ""
+                                        clean_c.append({"type": "image", "url": url_val})
+                                    else:
+                                        clean_c.append(elem)
+                                else:
+                                    clean_c.append(elem)
+                            clean_item["content"] = clean_c
                     elif clean_itype == "commandExecution":
+                        raw_cmd = clean_item.get("command")
+                        if isinstance(raw_cmd, list):
+                            import subprocess
+
+                            clean_item["command"] = subprocess.list2cmdline(raw_cmd)
                         if "process_id" in clean_item and "processId" not in clean_item:
-                            clean_item["processId"] = clean_item.pop("process_id", None)
+                            clean_item["processId"] = str(clean_item.pop("process_id", None) or "")
                         if "aggregated_output" in clean_item and "aggregatedOutput" not in clean_item:
                             clean_item["aggregatedOutput"] = clean_item.pop("aggregated_output", None)
                         if "exit_code" in clean_item and "exitCode" not in clean_item:
                             clean_item["exitCode"] = clean_item.pop("exit_code", None)
-                        if "duration" in clean_item and "durationMs" not in clean_item:
-                            clean_item["durationMs"] = clean_item.pop("duration", None)
-                        if "parsed_cmd" in clean_item and "commandActions" not in clean_item:
-                            clean_item["commandActions"] = clean_item.pop("parsed_cmd", None)
+                        dur_raw = clean_item.pop("duration", None) or clean_item.get("durationMs")
+                        if isinstance(dur_raw, dict):
+                            clean_item["durationMs"] = int(
+                                dur_raw.get("secs", 0) * 1000 + dur_raw.get("nanos", 0) // 1_000_000
+                            )
+                        elif isinstance(dur_raw, (int, float)):
+                            clean_item["durationMs"] = int(dur_raw)
+
+                        p_cmd = clean_item.pop("parsed_cmd", None) or clean_item.get("commandActions") or []
+                        actions = []
+                        if isinstance(p_cmd, list):
+                            for act in p_cmd:
+                                if isinstance(act, dict):
+                                    act_cmd = act.get("command") or act.get("cmd") or ""
+                                    actions.append({"type": "unknown", "command": act_cmd})
+                        clean_item["commandActions"] = (
+                            actions if actions else [{"type": "unknown", "command": clean_item.get("command", "")}]
+                        )
                     final_item_json = json.dumps(clean_item, ensure_ascii=False)
                     final_item_type = clean_itype
 
                 if thread_map:
                     for src_t, tgt_t in thread_map.items():
-                        final_item_json = final_item_json.replace(f"<source_thread_id>{src_t}</source_thread_id>", f"<source_thread_id>{tgt_t}</source_thread_id>")
-                        final_item_json = final_item_json.replace(f"<source_thread_id> {src_t} </source_thread_id>", f"<source_thread_id>{tgt_t}</source_thread_id>")
+                        if src_t and tgt_t and src_t != tgt_t:
+                            final_item_json = final_item_json.replace(src_t, tgt_t)
 
-                item_metas.append({
-                    "thread_id": tgt_id,
-                    "turn_id": tid,
-                    "item_id": iid,
-                    "rollout_ordinal": rec_ord,
-                    "created_at_ms": created_ms,
-                    "item_json": final_item_json,
-                    "item_type": final_item_type,
-                    "updated_at_ordinal": rec_ord,
-                })
+                item_metas.append(
+                    {
+                        "thread_id": tgt_id,
+                        "turn_id": tid,
+                        "item_id": iid,
+                        "rollout_ordinal": rec_ord,
+                        "created_at_ms": created_ms,
+                        "item_json": final_item_json,
+                        "item_type": final_item_type,
+                        "updated_at_ordinal": rec_ord,
+                    }
+                )
 
             if p.get("thread_id"):
                 p["thread_id"] = tgt_id
@@ -242,7 +287,11 @@ def stream_turn_wire_records(
                 if ptype == "function_call_output":
                     pname = p.get("name")
                     out_str = p.get("output", "")
-                    if pname in ("automation_update", "send_message_to_thread") or "<codex_delegation>" in out_str or "<heartbeat>" in out_str:
+                    if (
+                        pname in ("automation_update", "send_message_to_thread")
+                        or "<codex_delegation>" in out_str
+                        or "<heartbeat>" in out_str
+                    ):
                         p["type"] = "message"
                         p["role"] = "user"
                         p["content"] = [{"type": "input_text", "text": out_str}]
@@ -259,8 +308,8 @@ def stream_turn_wire_records(
         line_str = json.dumps(rec, ensure_ascii=False) + "\n"
         if thread_map:
             for src_t, tgt_t in thread_map.items():
-                line_str = line_str.replace(f"<source_thread_id>{src_t}</source_thread_id>", f"<source_thread_id>{tgt_t}</source_thread_id>")
-                line_str = line_str.replace(f"<source_thread_id> {src_t} </source_thread_id>", f"<source_thread_id>{tgt_t}</source_thread_id>")
+                if src_t and tgt_t and src_t != tgt_t:
+                    line_str = line_str.replace(src_t, tgt_t)
 
         transformed_lines.append(line_str)
 

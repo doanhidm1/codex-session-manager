@@ -5,9 +5,10 @@ def normalize_path(p):
     """Normalize file paths across Windows, macOS, and Linux."""
     if not p:
         return ""
-    if isinstance(p, str) and p.startswith('\\\\?\\'):
+    if isinstance(p, str) and p.startswith("\\\\?\\"):
         p = p[4:]
     return os.path.normpath(p)
+
 
 def get_default_codex_home():
     """Dynamically resolve Codex home directory across all platforms."""
@@ -26,6 +27,7 @@ def get_default_codex_home():
             return normalize_path(os.path.abspath(cand))
 
     return normalize_path(os.path.abspath(default_home))
+
 
 class CodexPaths:
     def __init__(self, codex_home=None):

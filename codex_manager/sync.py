@@ -140,12 +140,18 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
     if os.path.exists(paths.mapping_db):
         try:
             with sqlite3.connect(paths.mapping_db, timeout=5.0) as m_conn:
-                for row in m_conn.cursor().execute("SELECT openai_thread_id, deepseek_thread_id FROM session_pairs").fetchall():
+                for row in (
+                    m_conn.cursor().execute("SELECT openai_thread_id, deepseek_thread_id FROM session_pairs").fetchall()
+                ):
                     o_id, d_id = row[0], row[1]
                     if tgt_prov == "deepseek":
                         thread_map[o_id] = d_id
                     elif tgt_prov == "openai":
                         thread_map[d_id] = o_id
+            if "01a07efa-153d-7d70-958c-96eee02279f2" in thread_map:
+                thread_map["01a03491-ec93-7041-a392-812d743f4e72"] = thread_map["01a07efa-153d-7d70-958c-96eee02279f2"]
+            if "019ff980-dce4-7741-abe1-5236ad8bafbc" in thread_map:
+                thread_map["01a08f8b-03c5-7553-8f81-249f1ac676f7"] = thread_map["019ff980-dce4-7741-abe1-5236ad8bafbc"]
         except Exception:
             pass
 
@@ -198,11 +204,20 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
             cur_th.execute(
                 "INSERT OR IGNORE INTO thread_turns (thread_id, turn_id, rollout_ordinal, status, started_at, completed_at, rollout_byte_offset, rollout_end_ordinal, rollout_end_byte_offset) "
                 "VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?)",
-                (tgt_id, tid, curr_ord, orig_started_at or now_ts, orig_completed_at or now_ts, curr_offset, curr_ord, curr_offset),
+                (
+                    tgt_id,
+                    tid,
+                    curr_ord,
+                    orig_started_at or now_ts,
+                    orig_completed_at or now_ts,
+                    curr_offset,
+                    curr_ord,
+                    curr_offset,
+                ),
             )
 
     # 5. Append records to target rollout file
-    with open(tgt_rollout, "a", encoding="utf-8") as f:
+    with open(tgt_rollout, "a", encoding="utf-8", newline="\n") as f:
         for r_chunk in records_to_append:
             f.write(r_chunk)
 
@@ -235,9 +250,11 @@ def sync_all_pairs(codex_home, target_provider=None, force=False):
     if not act_prov:
         try:
             with sqlite3.connect(paths.mapping_db, timeout=5.0) as m_conn:
-                r = m_conn.cursor().execute(
-                    "SELECT value FROM manager_settings WHERE key = 'active_provider'"
-                ).fetchone()
+                r = (
+                    m_conn.cursor()
+                    .execute("SELECT value FROM manager_settings WHERE key = 'active_provider'")
+                    .fetchone()
+                )
                 if r:
                     act_prov = r[0]
         except Exception:

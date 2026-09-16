@@ -8,16 +8,15 @@ from .toml_utils import update_config_toml
 SUPPORTED_PROVIDERS = ("openai", "deepseek")
 DEEPSEEK_DOCS_URL = "https://api-docs.deepseek.com/quick_start/agent_integrations/codex/"
 
-DEFAULT_MODELS = {
-    "deepseek": ("deepseek-flash", "high"),
-    "openai": ("gpt-5.6-terra", "high")
-}
+DEFAULT_MODELS = {"deepseek": ("deepseek-flash", "high"), "openai": ("gpt-5.6-terra", "high")}
+
 
 def is_supported_provider(provider):
     """Check if the given provider is supported."""
     if not provider:
         return False
     return provider.lower().strip() in SUPPORTED_PROVIDERS
+
 
 def assert_supported_provider(provider):
     """Raise ValueError if the provider is unsupported."""
@@ -27,6 +26,7 @@ def assert_supported_provider(provider):
             f"Provider '{provider}' is not supported. "
             f"Currently, this tool only supports switching between {supported_str}."
         )
+
 
 def check_deepseek_config(codex_home):
     """
@@ -43,10 +43,10 @@ def check_deepseek_config(codex_home):
     except Exception as e:
         return False, f"Unable to read config.toml: {e}"
 
-    if not re.search(r'(?m)^\s*\[model_providers\.deepseek\]', content):
+    if not re.search(r"(?m)^\s*\[model_providers\.deepseek\]", content):
         return False, "Missing [model_providers.deepseek] section in config.toml"
 
-    m = re.search(r'(?m)^\s*\[model_providers\.deepseek\](.*?)(?=^\s*\[|\Z)', content, re.DOTALL)
+    m = re.search(r"(?m)^\s*\[model_providers\.deepseek\](.*?)(?=^\s*\[|\Z)", content, re.DOTALL)
     if not m:
         return False, "Could not parse [model_providers.deepseek] block in config.toml"
 
@@ -56,6 +56,7 @@ def check_deepseek_config(codex_home):
         return False, "Missing or placeholder experimental_bearer_token in [model_providers.deepseek]"
 
     return True, "DeepSeek configuration is valid."
+
 
 def warn_if_deepseek_unconfigured(codex_home):
     """Print an alert and setup guide if DeepSeek is not configured."""
@@ -78,6 +79,7 @@ def warn_if_deepseek_unconfigured(codex_home):
         print("=" * 76 + "\n")
     return ok
 
+
 def get_last_provider_settings(mapping_db_path, provider):
     """Fetch the last saved (model, reasoning_effort) for a provider from session_manager.sqlite."""
     prov = provider.lower().strip()
@@ -90,12 +92,15 @@ def get_last_provider_settings(mapping_db_path, provider):
             cur = conn.cursor()
             cur.execute("CREATE TABLE IF NOT EXISTS manager_settings (key TEXT PRIMARY KEY, value TEXT)")
             m_row = cur.execute("SELECT value FROM manager_settings WHERE key = ?", (f"last_{prov}_model",)).fetchone()
-            e_row = cur.execute("SELECT value FROM manager_settings WHERE key = ?", (f"last_{prov}_reasoning_effort",)).fetchone()
+            e_row = cur.execute(
+                "SELECT value FROM manager_settings WHERE key = ?", (f"last_{prov}_reasoning_effort",)
+            ).fetchone()
             model = (m_row[0] if m_row and m_row[0] else None) or def_model
             effort = (e_row[0] if e_row and e_row[0] else None) or def_effort
             return model, effort
     except Exception:
         return def_model, def_effort
+
 
 def save_provider_settings(mapping_db_path, provider, model, reasoning_effort):
     """Persist the last used (model, reasoning_effort) for a provider in session_manager.sqlite."""
@@ -105,12 +110,19 @@ def save_provider_settings(mapping_db_path, provider, model, reasoning_effort):
             cur = conn.cursor()
             cur.execute("CREATE TABLE IF NOT EXISTS manager_settings (key TEXT PRIMARY KEY, value TEXT)")
             if model:
-                cur.execute("INSERT OR REPLACE INTO manager_settings (key, value) VALUES (?, ?)", (f"last_{prov}_model", str(model)))
+                cur.execute(
+                    "INSERT OR REPLACE INTO manager_settings (key, value) VALUES (?, ?)",
+                    (f"last_{prov}_model", str(model)),
+                )
             if reasoning_effort:
-                cur.execute("INSERT OR REPLACE INTO manager_settings (key, value) VALUES (?, ?)", (f"last_{prov}_reasoning_effort", str(reasoning_effort)))
+                cur.execute(
+                    "INSERT OR REPLACE INTO manager_settings (key, value) VALUES (?, ?)",
+                    (f"last_{prov}_reasoning_effort", str(reasoning_effort)),
+                )
             conn.commit()
     except Exception:
         pass
+
 
 def detect_current_provider_settings(codex_home, provider):
     """
@@ -133,13 +145,13 @@ def detect_current_provider_settings(codex_home, provider):
                     "SELECT model, reasoning_effort FROM threads "
                     "WHERE model_provider = ? AND archived = 0 "
                     "ORDER BY updated_at DESC LIMIT 1",
-                    (prov,)
+                    (prov,),
                 ).fetchone()
                 if not row:
                     row = cur.execute(
                         "SELECT model, reasoning_effort FROM threads "
                         "WHERE model_provider = ? ORDER BY updated_at DESC LIMIT 1",
-                        (prov,)
+                        (prov,),
                     ).fetchone()
                 if row:
                     detected_model = row[0]
@@ -165,7 +177,6 @@ def detect_current_provider_settings(codex_home, provider):
             pass
 
     return detected_model or def_model, detected_effort or def_effort
-
 
 
 def switch_provider_settings(codex_home, target_provider):
@@ -199,10 +210,8 @@ def switch_provider_settings(codex_home, target_provider):
         target_model, target_effort = detect_current_provider_settings(codex_home, target_prov)
 
     # 3. Update config.toml
-    update_config_toml(codex_home, {
-        "model_provider": target_prov,
-        "model": target_model,
-        "model_reasoning_effort": target_effort
-    })
+    update_config_toml(
+        codex_home, {"model_provider": target_prov, "model": target_model, "model_reasoning_effort": target_effort}
+    )
 
     return target_model, target_effort

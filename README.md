@@ -35,9 +35,20 @@ A zero-dependency, cross-platform CLI tool and Python library for managing, migr
 9. **Active Running Session Protection:**
    - Detects whether Codex is actively generating a response or running tools (via `thread_history_1.sqlite` status `inProgress` and live rollout write timestamps).
    - Automatically halts `switch` and `sync` operations with a clear, detailed warning to prevent SQLite database locks (`database is locked`) or corrupted rollout logs (overridable with `--force`).
-10. **Zero External Dependencies & Cross-Platform:**
-   - Built 100% using the Python standard library (`sqlite3`, `json`, `uuid`, `time`, `os`, `shutil`, `sys`, `re`).
-   - Seamlessly works across Windows (`%USERPROFILE%\.codex`), macOS (`~/.codex`), and Linux (`~/.codex`).
+10. **DeepSeek Reverse Proxy Protocol Adapter (Port 8765):**
+    - Intercepts Responses API streaming requests to DeepSeek, neutralizes legacy code-mode `name: "exec"` calls in historical context into `legacy_exec` to prevent few-shot hallucination, and injects direct tool directives (`exec_command(cmd="...")`).
+    - Automatically managed lifecycle: switching to DeepSeek automatically starts the daemon, switching to OpenAI stops it to free resources.
+    - Continuous background reconciler loop (every 2s) repairs `first_user_item_id` in SQLite so `read_thread` returns full inter-session communication results seamlessly.
+    - Includes Desktop 1-click manager (`proxy-deepseek.bat`, `DeepSeek Proxy.lnk`) with Windows startup boot support.
+11. **Rollout Line Auditor & SQLite Repair Engine (`repair`):**
+    - Audits JSONL rollout files line-by-line for syntax corruption, truncated records, and offset gaps.
+    - Rebuilds and synchronizes SQLite projection indices (`thread_turns`, `thread_items`, `thread_history_projection_state`).
+12. **Long-Session Archival & Splitter Engine (`split`):**
+    - Splits massive sessions (e.g. >500 turns) into an archived historical thread and an active recent thread.
+    - Eliminates UI lag and high memory consumption while maintaining flawless continuity.
+13. **Zero External Dependencies & Cross-Platform:**
+    - Built using standard library Python utilities with clean modular architecture.
+    - Seamlessly works across Windows (`%USERPROFILE%\.codex`), macOS (`~/.codex`), and Linux (`~/.codex`).
 
 ---
 
@@ -58,6 +69,7 @@ codex-session-manager/
 │   ├── cli.py                 # Command dispatcher and argument parser
 │   ├── config.py              # Environment and cross-platform path resolver
 │   ├── db.py                  # SQLite adapters for state_5 and thread_history_1
+│   ├── deepseek_proxy.py      # Legacy entrypoint wrapping proxy module
 │   ├── discovery.py           # Auto-discovery of unmapped threads & name tagging
 │   ├── extractor.py           # Turn extraction & payload parsing from rollout files
 │   ├── mapping.py             # Dedicated mapping database (session_manager.sqlite)
@@ -65,8 +77,24 @@ codex-session-manager/
 │   ├── pair_health.py         # Target health verification & deleted/corrupt target recovery
 │   ├── projection.py          # SQLite byte-offset and ordinal projection
 │   ├── provider.py            # Provider validation & model settings preservation
+│   ├── proxy/                 # DeepSeek Reverse Proxy & Protocol Adapter (Port 8765)
+│   │   ├── __init__.py
+│   │   ├── adapter.py         # Responses API adapter (neutralizes exec, injects directives)
+│   │   ├── config.py          # Port, host, and timeout constants
+│   │   ├── daemon.py          # Lifecycle management (start, stop, status, health check)
+│   │   ├── reconciler.py      # Background reconciler (repairs first_user_item_id)
+│   │   └── server.py          # FastAPI streaming reverse proxy with async pool
+│   ├── repair/                # Rollout Line Auditor & SQLite Repair Engine
+│   │   ├── __init__.py
+│   │   ├── audit.py           # JSONL syntax and schema gap analyzer
+│   │   ├── db_sync.py         # SQLite index and projection synchronizer
+│   │   └── repair.py          # Line-by-line truncation and repair orchestrator
 │   ├── rollout.py             # Parser and serializer for JSONL wire format
-│   ├── switch.py              # Provider switcher with auto-sync & archive toggle
+│   ├── split/                 # Long-Session Splitter & Archival Engine
+│   │   ├── __init__.py
+│   │   ├── auto_split.py      # Automated split trigger based on turn thresholds
+│   │   └── splitter.py        # Clean historical partition and active head creator
+│   ├── switch.py              # Provider switcher with auto-sync, proxy lifecycle & archive toggle
 │   ├── sync.py                # Incremental two-way append-only sync algorithm
 │   ├── sync_builder.py        # High-fidelity payload builder for incremental sync
 │   ├── sync_overwrite.py      # Full convert overwrite engine (wipes corrupt targets)
@@ -77,7 +105,10 @@ codex-session-manager/
 │   ├── switch-deepseek.sh     # macOS/Linux: 1-click sync & switch to DeepSeek
 │   └── switch-openai.sh       # macOS/Linux: 1-click sync & switch to OpenAI
 └── tests/
-    └── test_smoke.py          # Fast automated test suite (< 5ms)
+    ├── test_proxy.py          # Proxy adapter, daemon, and reconciler test suite
+    ├── test_repair.py         # Rollout repair and JSONL auditor tests
+    ├── test_smoke.py          # Core workflow and sync smoke tests
+    └── test_split.py          # Session splitter and partition tests
 ```
 
 ---
@@ -223,7 +254,50 @@ python codex_migrator.py list
 python codex_migrator.py rollback
 ```
 
-#### 7. Safety, Lock Protection & `--force` Recovery
+#### 7. DeepSeek Reverse Proxy Management (Port 8765)
+The manager includes an integrated reverse proxy daemon that adapts Responses API protocol requests for DeepSeek, neutralizes legacy code-mode `exec` calls into `legacy_exec`, injects direct `exec_command` tool directives, and reconciles inter-session delegation turns in the background every 2 seconds:
+
+```bash
+# Check daemon status and connection to upstream
+python codex_migrator.py proxy status
+
+# Start the reverse proxy daemon in the background
+python codex_migrator.py proxy start
+
+# Stop the reverse proxy daemon
+python codex_migrator.py proxy stop
+
+# Restart the reverse proxy daemon
+python codex_migrator.py proxy restart
+
+# Reconcile delegation turns so read_thread returns full content
+python codex_migrator.py reconcile
+```
+
+> **Desktop 1-Click Shortcut & Windows Auto-Start:**
+> - Open `proxy-deepseek.bat` or `DeepSeek Proxy.lnk` on your Desktop for a 1-click management menu.
+> - Select `[5]` to enable **Auto-start on Boot** (creates a silent `pythonw.exe` startup shortcut) so the proxy is always running even after system reboots.
+
+#### 8. Rollout Auditing & SQLite Repair Engine
+Audit rollout JSONL logs line-by-line for truncated chunks, JSON syntax corruption, and projection misalignment:
+
+```bash
+# Audit a specific session by name or Thread ID
+python codex_migrator.py repair Grok
+
+# Audit and repair all registered session pairs
+python codex_migrator.py repair --all
+```
+
+#### 9. Long-Session Splitting & Archiving
+Prevent massive multi-turn sessions (e.g. >500 turns) from causing UI lag or memory pressure by cleanly archiving older history while keeping the active head session responsive:
+
+```bash
+# Split a session, keeping the latest 500 turns active and archiving the rest
+python codex_migrator.py split "SaaS" 500
+```
+
+#### 10. Safety, Lock Protection & `--force` Recovery
 - **Lock & Active Turn Detection**: The system strictly checks that Codex is completely idle before allowing `switch` or `sync`. It verifies that:
   1. No turns are `inProgress` or generating.
   2. All SQLite databases (`state_5.sqlite`, `thread_history_1.sqlite`, `session_manager.sqlite`) are clean and lockable via `BEGIN EXCLUSIVE`.

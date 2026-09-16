@@ -46,14 +46,14 @@ def discover_and_pair_unmapped_threads(codex_home, source_provider_filter=None):
     finally:
         conn.close()
 
-
     if not unmapped:
         return []
 
     from .migration import migrate_thread
+
     new_paired = []
     for tid, name, title, prov in unmapped:
-        target_prov = 'openai' if prov == 'deepseek' else 'deepseek'
+        target_prov = "openai" if prov == "deepseek" else "deepseek"
         display_name = name or title or tid[:8]
         print(f"\n[*] Discovered new un-paired [{prov.upper()}] session: '{display_name}'")
         print(f"    Auto-creating [{target_prov.upper()}] counterpart and registering pair...")

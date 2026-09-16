@@ -31,6 +31,7 @@ def init_mapping_db(mapping_db_path):
     conn.commit()
     conn.close()
 
+
 def get_all_pairs(mapping_db_path, active_only=True):
     """Retrieve all registered pairs from session_manager.sqlite."""
     init_mapping_db(mapping_db_path)
@@ -44,6 +45,7 @@ def get_all_pairs(mapping_db_path, active_only=True):
     conn.close()
     return rows
 
+
 def register_pair(mapping_db_path, name, openai_id, ds_id):
     """Register or update an explicit pair mapping."""
     init_mapping_db(mapping_db_path)
@@ -51,17 +53,21 @@ def register_pair(mapping_db_path, name, openai_id, ds_id):
     cur = conn.cursor()
     pair_id = str(uuid.uuid4())
     now_ts = int(time.time())
-    cur.execute("""
+    cur.execute(
+        """
         INSERT INTO session_pairs (pair_id, name, openai_thread_id, deepseek_thread_id, created_at, is_active)
         VALUES (?, ?, ?, ?, ?, 1)
         ON CONFLICT(openai_thread_id) DO UPDATE SET
             name = excluded.name,
             deepseek_thread_id = excluded.deepseek_thread_id,
             is_active = 1
-    """, (pair_id, name, openai_id, ds_id, now_ts))
+    """,
+        (pair_id, name, openai_id, ds_id, now_ts),
+    )
     conn.commit()
     conn.close()
     return True
+
 
 def remove_pair(mapping_db_path, identifier):
     """Deactivate or remove a pair by name or pair_id."""
@@ -70,12 +76,13 @@ def remove_pair(mapping_db_path, identifier):
     cur = conn.cursor()
     cur.execute(
         "DELETE FROM session_pairs WHERE pair_id = ? OR LOWER(name) = LOWER(?) OR openai_thread_id = ? OR deepseek_thread_id = ?",
-        (identifier, identifier, identifier, identifier)
+        (identifier, identifier, identifier, identifier),
     )
     deleted = cur.rowcount
     conn.commit()
     conn.close()
     return deleted > 0
+
 
 def update_last_synced(mapping_db_path, pair_id, timestamp=None):
     """Update last_synced_at timestamp for a pair."""
@@ -85,6 +92,7 @@ def update_last_synced(mapping_db_path, pair_id, timestamp=None):
     cur.execute("UPDATE session_pairs SET last_synced_at = ? WHERE pair_id = ?", (ts, pair_id))
     conn.commit()
     conn.close()
+
 
 def auto_seed_existing_pairs(codex_home):
     """
@@ -102,6 +110,7 @@ def auto_seed_existing_pairs(codex_home):
         return []
 
     from .db import get_paired_threads
+
     discovered = get_paired_threads(paths.state_db)
     for orig_t, ds_t in discovered:
         name = orig_t[1] or "Session"
@@ -110,6 +119,7 @@ def auto_seed_existing_pairs(codex_home):
         register_pair(paths.mapping_db, name, orig_id, ds_id)
 
     return get_all_pairs(paths.mapping_db, active_only=True)
+
 
 def list_pairs_table(codex_home):
     """Print a clean table of all mapped pairs with their live status in state_5.sqlite."""
@@ -132,7 +142,7 @@ def list_pairs_table(codex_home):
 
     header = f"{'#':<3} | {'Project Name':<16} | {'OpenAI ID':<36} ({'PC Status':<8}) | {'DeepSeek ID':<36} ({'PC Status':<8}) | {'Last Synced'}"
     print(header)
-    print('-' * len(header))
+    print("-" * len(header))
     for idx, p in enumerate(pairs, 1):
         pid, name, o_id, d_id, cat, lsync, is_act = p
         o_stat = status_map.get(o_id, "Unknown")
@@ -158,8 +168,12 @@ def register_migrated_session(paths, new_id, new_name, clean_cwd, target_prov, o
                     "VALUES ('local', ?, ?, ?, ?, ?, 'local', ?, 'user', ?)",
                     (new_id, new_name, now_ts, now_ts, clean_cwd, target_prov, now_ts),
                 )
-                cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (o_name, o_id))
-                cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (d_name, d_id))
+                cat_conn.execute(
+                    "UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (o_name, o_id)
+                )
+                cat_conn.execute(
+                    "UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (d_name, d_id)
+                )
                 cat_conn.commit()
         except Exception:
             pass
@@ -167,5 +181,3 @@ def register_migrated_session(paths, new_id, new_name, clean_cwd, target_prov, o
         register_pair(paths.mapping_db, clean_pname, o_id, d_id)
     except Exception:
         pass
-
-

@@ -1,8 +1,17 @@
 import os
 import sqlite3
+import sys
 import time
 
 from .config import CodexPaths
+
+
+def _safe_print(text: str) -> None:
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = sys.stdout.encoding or "utf-8"
+        print(text.encode(enc, errors="replace").decode(enc))
 
 
 def check_file_and_db_locks(codex_home):
@@ -136,7 +145,7 @@ def assert_no_running_sessions(codex_home, force=False, threshold_sec=60):
     print(" [!] REJECTED: Active Codex session detected (inProgress / generating)!")
     for r in running:
         title_disp = r["title"].replace("\n", " ")[:50]
-        print(f"     - Session : [{r['provider'].upper()}] {title_disp}")
+        _safe_print(f"     - Session : [{r['provider'].upper()}] {title_disp}")
         print(f"       ID      : {r['thread_id']}")
         if r.get("turn_id"):
             print(f"       Turn ID : {r['turn_id']}")
@@ -163,4 +172,4 @@ def print_running_status(codex_home):
         print(f"  Turn Status : [RUNNING] Detected {len(running)} active session(s):")
         for r in running:
             title_disp = r["title"].replace("\n", " ")[:55]
-            print(f"  - [{r['provider'].upper()}] {title_disp} ({r['thread_id'][:8]}): {r['reason']}")
+            _safe_print(f"  - [{r['provider'].upper()}] {title_disp} ({r['thread_id'][:8]}): {r['reason']}")

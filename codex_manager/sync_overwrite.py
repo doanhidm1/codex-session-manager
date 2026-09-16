@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -82,9 +83,9 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
     if os.path.exists(paths.mapping_db):
         try:
             with sqlite3.connect(paths.mapping_db, timeout=5.0) as m_conn:
-                for row in m_conn.cursor().execute(
-                    "SELECT openai_thread_id, deepseek_thread_id FROM session_pairs"
-                ).fetchall():
+                for row in (
+                    m_conn.cursor().execute("SELECT openai_thread_id, deepseek_thread_id FROM session_pairs").fetchall()
+                ):
                     o_id, d_id = row[0], row[1]
                     if tgt_prov == "deepseek":
                         thread_map[o_id] = d_id
@@ -103,8 +104,12 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
             return text
         res = text
         for s_t, t_t in thread_map.items():
-            res = res.replace(f"<source_thread_id>{s_t}</source_thread_id>", f"<source_thread_id>{t_t}</source_thread_id>")
-            res = res.replace(f"<source_thread_id> {s_t} </source_thread_id>", f"<source_thread_id>{t_t}</source_thread_id>")
+            res = res.replace(
+                f"<source_thread_id>{s_t}</source_thread_id>", f"<source_thread_id>{t_t}</source_thread_id>"
+            )
+            res = res.replace(
+                f"<source_thread_id> {s_t} </source_thread_id>", f"<source_thread_id>{t_t}</source_thread_id>"
+            )
         return res
 
     # 4. Pre-fetch source items from SQLite thread_items
@@ -120,9 +125,9 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
         source_items_cache[iid] = (tid, itype, translate_thread_ids(ijson))
 
     with sqlite3.connect(paths.state_db, timeout=5.0) as conn_s:
-        tgt_model_row = conn_s.cursor().execute(
-            "SELECT model, cwd, history_mode FROM threads WHERE id = ?", (tgt_id,)
-        ).fetchone()
+        tgt_model_row = (
+            conn_s.cursor().execute("SELECT model, cwd, history_mode FROM threads WHERE id = ?", (tgt_id,)).fetchone()
+        )
     tgt_model = (tgt_model_row[0] if tgt_model_row else None) or (
         "DeepSeek-Flash High" if tgt_prov == "deepseek" else "gpt-5.6-terra"
     )
@@ -171,10 +176,10 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
 
     first_meta["ordinal"] = base_ord
 
-    out_file = open(tgt_rollout, "w", encoding="utf-8")
+    out_file = open(tgt_rollout, "w", encoding="utf-8", newline="\n")
     meta_line = json.dumps(first_meta, ensure_ascii=False) + "\n"
     out_file.write(meta_line)
-    curr_offset = len(meta_line.encode("utf-8"))
+    curr_offset = out_file.tell()
     curr_ord = base_ord + 1
 
     turns_meta = []
@@ -213,21 +218,23 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                     if ptype == "task_started":
                         tid = p.get("turn_id")
                         if curr_tid and curr_tid != tid:
-                            turns_meta.append({
-                                "thread_id": tgt_id,
-                                "turn_id": curr_tid,
-                                "rollout_ordinal": curr_turn_start_ord,
-                                "status": "failed" if curr_turn_error_json else "completed",
-                                "error_json": curr_turn_error_json,
-                                "started_at": curr_turn_started_at,
-                                "completed_at": curr_turn_completed_at or curr_turn_started_at,
-                                "duration_ms": curr_turn_duration_ms,
-                                "first_user_item_id": curr_turn_first_user,
-                                "final_agent_item_id": curr_turn_final_agent,
-                                "rollout_byte_offset": curr_turn_start_offset,
-                                "rollout_end_ordinal": rec_ord - 1,
-                                "rollout_end_byte_offset": curr_offset,
-                            })
+                            turns_meta.append(
+                                {
+                                    "thread_id": tgt_id,
+                                    "turn_id": curr_tid,
+                                    "rollout_ordinal": curr_turn_start_ord,
+                                    "status": "failed" if curr_turn_error_json else "completed",
+                                    "error_json": curr_turn_error_json,
+                                    "started_at": curr_turn_started_at,
+                                    "completed_at": curr_turn_completed_at or curr_turn_started_at,
+                                    "duration_ms": curr_turn_duration_ms,
+                                    "first_user_item_id": curr_turn_first_user,
+                                    "final_agent_item_id": curr_turn_final_agent,
+                                    "rollout_byte_offset": curr_turn_start_offset,
+                                    "rollout_end_ordinal": rec_ord - 1,
+                                    "rollout_end_byte_offset": curr_offset,
+                                }
+                            )
                             curr_tid = None
 
                         if tid:
@@ -256,10 +263,14 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                         iid = it.get("id", "")
 
                         is_converted_xml = False
-                        if tgt_prov != "openai" and itype_raw == "FunctionCallOutput":
+                        if itype_raw in ("FunctionCallOutput", "functionCallOutput"):
                             iname = it.get("name")
                             out_str = it.get("output", "")
-                            if iname in ("automation_update", "send_message_to_thread") or "<codex_delegation>" in out_str or "<heartbeat>" in out_str:
+                            if (
+                                iname in ("automation_update", "send_message_to_thread")
+                                or "<codex_delegation>" in out_str
+                                or "<heartbeat>" in out_str
+                            ):
                                 out_str_trans = translate_thread_ids(out_str)
                                 it["type"] = "UserMessage"
                                 it["content"] = [{"type": "text", "text": out_str_trans}]
@@ -289,17 +300,63 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                                 clean_item["text"] = "".join(
                                     c.get("text", "") for c in it.get("content", []) if isinstance(c, dict)
                                 )
+                            elif clean_itype == "userMessage":
+                                raw_c = clean_item.get("content", [])
+                                clean_c = []
+                                if isinstance(raw_c, list):
+                                    for elem in raw_c:
+                                        if isinstance(elem, dict):
+                                            et = elem.get("type")
+                                            if et in ("local_image", "localImage"):
+                                                clean_c.append(
+                                                    {
+                                                        "type": "localImage",
+                                                        "detail": elem.get("detail", None),
+                                                        "path": elem.get("path", ""),
+                                                    }
+                                                )
+                                            elif et in ("local_audio", "localAudio"):
+                                                clean_c.append({"type": "localAudio", "path": elem.get("path", "")})
+                                            elif et in ("image", "input_image"):
+                                                url_val = elem.get("url") or elem.get("image_url") or ""
+                                                clean_c.append({"type": "image", "url": url_val})
+                                            else:
+                                                clean_c.append(elem)
+                                        else:
+                                            clean_c.append(elem)
+                                    clean_item["content"] = clean_c
                             elif clean_itype == "commandExecution":
+                                raw_cmd = clean_item.get("command")
+                                if isinstance(raw_cmd, list):
+                                    import subprocess
+
+                                    clean_item["command"] = subprocess.list2cmdline(raw_cmd)
                                 if "process_id" in clean_item and "processId" not in clean_item:
-                                    clean_item["processId"] = clean_item.pop("process_id", None)
+                                    clean_item["processId"] = str(clean_item.pop("process_id", None) or "")
                                 if "aggregated_output" in clean_item and "aggregatedOutput" not in clean_item:
                                     clean_item["aggregatedOutput"] = clean_item.pop("aggregated_output", None)
                                 if "exit_code" in clean_item and "exitCode" not in clean_item:
                                     clean_item["exitCode"] = clean_item.pop("exit_code", None)
-                                if "duration" in clean_item and "durationMs" not in clean_item:
-                                    clean_item["durationMs"] = clean_item.pop("duration", None)
-                                if "parsed_cmd" in clean_item and "commandActions" not in clean_item:
-                                    clean_item["commandActions"] = clean_item.pop("parsed_cmd", None)
+                                dur_raw = clean_item.pop("duration", None) or clean_item.get("durationMs")
+                                if isinstance(dur_raw, dict):
+                                    clean_item["durationMs"] = int(
+                                        dur_raw.get("secs", 0) * 1000 + dur_raw.get("nanos", 0) // 1_000_000
+                                    )
+                                elif isinstance(dur_raw, (int, float)):
+                                    clean_item["durationMs"] = int(dur_raw)
+
+                                p_cmd = clean_item.pop("parsed_cmd", None) or clean_item.get("commandActions") or []
+                                actions = []
+                                if isinstance(p_cmd, list):
+                                    for act in p_cmd:
+                                        if isinstance(act, dict):
+                                            act_cmd = act.get("command") or act.get("cmd") or ""
+                                            actions.append({"type": "unknown", "command": act_cmd})
+                                clean_item["commandActions"] = (
+                                    actions
+                                    if actions
+                                    else [{"type": "unknown", "command": clean_item.get("command", "")}]
+                                )
                             final_item_json = translate_thread_ids(json.dumps(clean_item, ensure_ascii=False))
                             final_item_type = clean_itype
 
@@ -312,16 +369,18 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                             item_turn_id = curr_tid
 
                         if item_turn_id:
-                            items_meta.append({
-                                "thread_id": tgt_id,
-                                "turn_id": item_turn_id,
-                                "item_id": iid,
-                                "rollout_ordinal": rec_ord,
-                                "created_at_ms": created_ms,
-                                "item_json": final_item_json,
-                                "item_type": final_item_type,
-                                "updated_at_ordinal": rec_ord,
-                            })
+                            items_meta.append(
+                                {
+                                    "thread_id": tgt_id,
+                                    "turn_id": item_turn_id,
+                                    "item_id": iid,
+                                    "rollout_ordinal": rec_ord,
+                                    "created_at_ms": created_ms,
+                                    "item_json": final_item_json,
+                                    "item_type": final_item_type,
+                                    "updated_at_ordinal": rec_ord,
+                                }
+                            )
 
                     if p.get("thread_id"):
                         p["thread_id"] = tgt_id
@@ -335,7 +394,11 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                     if ptype == "function_call_output":
                         pname = p.get("name")
                         out_str = p.get("output", "")
-                        if pname in ("automation_update", "send_message_to_thread") or "<codex_delegation>" in out_str or "<heartbeat>" in out_str:
+                        if (
+                            pname in ("automation_update", "send_message_to_thread")
+                            or "<codex_delegation>" in out_str
+                            or "<heartbeat>" in out_str
+                        ):
                             out_str_trans = translate_thread_ids(out_str)
                             p["type"] = "message"
                             p["role"] = "user"
@@ -343,6 +406,40 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                             p.pop("name", None)
                             p.pop("output", None)
                             p.pop("namespace", None)
+                    elif ptype == "message" and p.get("role") == "user":
+                        iid = p.get("id")
+                        if iid and not curr_turn_first_user:
+                            curr_turn_first_user = iid
+                        raw_c = p.get("content", [])
+                        clean_text = ""
+                        for part in raw_c:
+                            if isinstance(part, dict) and "text" in part:
+                                clean_text += part["text"]
+                            elif isinstance(part, str):
+                                clean_text += part
+                        if "<objective>" in clean_text:
+                            m = re.search(r"<objective>(.*?)</objective>", clean_text, re.DOTALL)
+                            if m:
+                                clean_text = f"[Goal: {m.group(1).strip()}]\n{clean_text}"
+                        clean_item = {
+                            "type": "userMessage",
+                            "id": iid,
+                            "content": [{"type": "text", "text": clean_text}],
+                        }
+                        item_turn_id = curr_tid
+                        if item_turn_id and iid:
+                            items_meta.append(
+                                {
+                                    "thread_id": tgt_id,
+                                    "turn_id": item_turn_id,
+                                    "item_id": iid,
+                                    "rollout_ordinal": rec_ord,
+                                    "created_at_ms": now_ms,
+                                    "item_json": translate_thread_ids(json.dumps(clean_item, ensure_ascii=False)),
+                                    "item_type": "userMessage",
+                                    "updated_at_ordinal": rec_ord,
+                                }
+                            )
 
                 elif rtype == "token_usage_record":
                     if p.get("thread_id"):
@@ -352,42 +449,46 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
 
                 line_str = translate_thread_ids(json.dumps(d, ensure_ascii=False)) + "\n"
                 out_file.write(line_str)
-                curr_offset += len(line_str.encode("utf-8"))
+                curr_offset = out_file.tell()
 
                 if rtype == "event_msg" and p.get("type") == "task_complete" and curr_tid:
-                    turns_meta.append({
-                        "thread_id": tgt_id,
-                        "turn_id": curr_tid,
-                        "rollout_ordinal": curr_turn_start_ord,
-                        "status": "failed" if curr_turn_error_json else "completed",
-                        "error_json": curr_turn_error_json,
-                        "started_at": curr_turn_started_at,
-                        "completed_at": curr_turn_completed_at or curr_turn_started_at,
-                        "duration_ms": curr_turn_duration_ms,
-                        "first_user_item_id": curr_turn_first_user,
-                        "final_agent_item_id": curr_turn_final_agent,
-                        "rollout_byte_offset": curr_turn_start_offset,
-                        "rollout_end_ordinal": rec_ord,
-                        "rollout_end_byte_offset": curr_offset,
-                    })
+                    turns_meta.append(
+                        {
+                            "thread_id": tgt_id,
+                            "turn_id": curr_tid,
+                            "rollout_ordinal": curr_turn_start_ord,
+                            "status": "failed" if curr_turn_error_json else "completed",
+                            "error_json": curr_turn_error_json,
+                            "started_at": curr_turn_started_at,
+                            "completed_at": curr_turn_completed_at or curr_turn_started_at,
+                            "duration_ms": curr_turn_duration_ms,
+                            "first_user_item_id": curr_turn_first_user,
+                            "final_agent_item_id": curr_turn_final_agent,
+                            "rollout_byte_offset": curr_turn_start_offset,
+                            "rollout_end_ordinal": rec_ord,
+                            "rollout_end_byte_offset": curr_offset,
+                        }
+                    )
                     curr_tid = None
 
         if curr_tid:
-            turns_meta.append({
-                "thread_id": tgt_id,
-                "turn_id": curr_tid,
-                "rollout_ordinal": curr_turn_start_ord,
-                "status": "failed" if curr_turn_error_json else "completed",
-                "error_json": curr_turn_error_json,
-                "started_at": curr_turn_started_at,
-                "completed_at": curr_turn_completed_at or curr_turn_started_at,
-                "duration_ms": curr_turn_duration_ms,
-                "first_user_item_id": curr_turn_first_user,
-                "final_agent_item_id": curr_turn_final_agent,
-                "rollout_byte_offset": curr_turn_start_offset,
-                "rollout_end_ordinal": curr_ord - 1,
-                "rollout_end_byte_offset": curr_offset,
-            })
+            turns_meta.append(
+                {
+                    "thread_id": tgt_id,
+                    "turn_id": curr_tid,
+                    "rollout_ordinal": curr_turn_start_ord,
+                    "status": "failed" if curr_turn_error_json else "completed",
+                    "error_json": curr_turn_error_json,
+                    "started_at": curr_turn_started_at,
+                    "completed_at": curr_turn_completed_at or curr_turn_started_at,
+                    "duration_ms": curr_turn_duration_ms,
+                    "first_user_item_id": curr_turn_first_user,
+                    "final_agent_item_id": curr_turn_final_agent,
+                    "rollout_byte_offset": curr_turn_start_offset,
+                    "rollout_end_ordinal": curr_ord - 1,
+                    "rollout_end_byte_offset": curr_offset,
+                }
+            )
             curr_tid = None
 
     out_file.close()
@@ -474,22 +575,8 @@ def overwrite_all_mapped_pairs(codex_home, target_provider=None, force=False):
         print("[i] No mapped session pairs found to overwrite.")
         return True
 
-    # Detect current provider from config.toml
-    cur_prov = "openai"
-    if os.path.exists(paths.config_toml):
-        import re
-
-        try:
-            m = re.search(
-                r'(?m)^model_provider\s*=\s*"([^"]+)"',
-                open(paths.config_toml, "r", encoding="utf-8").read(),
-            )
-            if m:
-                cur_prov = m.group(1).lower().strip()
-        except Exception:
-            pass
-
     from .activity import assert_no_running_sessions
+
     if not force and not assert_no_running_sessions(codex_home, force=force):
         return False
 

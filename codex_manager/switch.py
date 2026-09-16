@@ -82,9 +82,34 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
         )
         return False
 
-    # Check DeepSeek configuration if switching to DeepSeek
+    # Manage DeepSeek proxy lifecycle based on target mode
     if mode == "deepseek":
         warn_if_deepseek_unconfigured(codex_home)
+        from .proxy.daemon import is_proxy_running, start_proxy_daemon
+
+        if not is_proxy_running():
+            print("[*] Starting DeepSeek Reverse Proxy daemon on port 8765...")
+            if start_proxy_daemon():
+                print("[+] DeepSeek Reverse Proxy is RUNNING on http://127.0.0.1:8765")
+            else:
+                print("[-] WARNING: Failed to start DeepSeek Reverse Proxy daemon! Codex may fail to connect.")
+        else:
+            print("[+] DeepSeek Reverse Proxy is already RUNNING on port 8765.")
+
+        from .proxy.reconciler import reconcile_delegation_turns
+
+        reconciled = reconcile_delegation_turns()
+        if reconciled > 0:
+            print(f"[*] Reconciled {reconciled} cross-session delegation turn(s) for read_thread compatibility.")
+    elif mode == "openai":
+        from .proxy.daemon import is_proxy_running, stop_proxy_daemon
+
+        if is_proxy_running():
+            print("[*] Stopping DeepSeek Reverse Proxy daemon (not needed in OpenAI mode)...")
+            if stop_proxy_daemon():
+                print("[+] DeepSeek Reverse Proxy stopped.")
+            else:
+                print("[-] WARNING: Failed to gracefully stop DeepSeek Reverse Proxy daemon.")
 
     # 0. Preserve outgoing model settings & restore incoming model settings in config.toml
     if mode in ("deepseek", "openai"):
@@ -118,6 +143,11 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
                 sync_threads(d_id, o_id, codex_home, force=force)
             update_last_synced(paths.mapping_db, pair_id)
 
+    # 1.5. Auto-split active pairs if configured threshold in config.toml is exceeded
+    from .split import check_and_auto_split
+
+    check_and_auto_split(codex_home)
+
     # 2. Update archived status & sync names in state_5.sqlite and local_thread_catalog
     conn = get_connection(paths.state_db, timeout=10.0)
     cur = conn.cursor()
@@ -128,7 +158,9 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
         clean = re.sub(r"\s*\(ds\)$", "", name).strip()
         ds_name = f"{clean} (ds)"
         cur.execute("UPDATE threads SET name = ? WHERE id = ? AND (name IS NULL OR name != ?)", (clean, o_id, clean))
-        cur.execute("UPDATE threads SET name = ? WHERE id = ? AND (name IS NULL OR name != ?)", (ds_name, d_id, ds_name))
+        cur.execute(
+            "UPDATE threads SET name = ? WHERE id = ? AND (name IS NULL OR name != ?)", (ds_name, d_id, ds_name)
+        )
 
         # Inspect pinned status from both pair members
         cur.execute("SELECT thread_section_id, section_position, is_pinned FROM threads WHERE id = ?", (o_id,))
@@ -137,7 +169,9 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
         d_sec = cur.fetchone()
 
         sec_id = (o_sec[0] if o_sec and o_sec[0] else None) or (d_sec[0] if d_sec and d_sec[0] else None)
-        sec_pos = (o_sec[1] if o_sec and o_sec[1] is not None else None) or (d_sec[1] if d_sec and d_sec[1] is not None else None)
+        sec_pos = (o_sec[1] if o_sec and o_sec[1] is not None else None) or (
+            d_sec[1] if d_sec and d_sec[1] is not None else None
+        )
         is_pin = 1 if ((o_sec and o_sec[2]) or (d_sec and d_sec[2])) else 0
 
         if mode == "deepseek":
@@ -171,7 +205,9 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
         if cat_conn:
             try:
                 cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (clean, o_id))
-                cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (ds_name, d_id))
+                cat_conn.execute(
+                    "UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (ds_name, d_id)
+                )
             except Exception:
                 pass
 
@@ -188,7 +224,6 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
             cat_conn.close()
         except Exception:
             pass
-
 
     # 2.5 Update automations target_thread_id if matching any pair
     # Note: Heartbeat automations must remain targeted to OpenAI threads because DeepSeek API rejects synthetic function_call_output
@@ -207,12 +242,24 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
                             _, _, o_id, d_id, _, _, _ = p
                             if is_heartbeat:
                                 # Always route heartbeat automations to OpenAI
-                                new_content = re.sub(rf'(?m)^target_thread_id\s*=\s*"{d_id}"', f'target_thread_id = "{o_id}"', new_content)
+                                new_content = re.sub(
+                                    rf'(?m)^target_thread_id\s*=\s*"{d_id}"',
+                                    f'target_thread_id = "{o_id}"',
+                                    new_content,
+                                )
                             else:
                                 if mode == "deepseek":
-                                    new_content = re.sub(rf'(?m)^target_thread_id\s*=\s*"{o_id}"', f'target_thread_id = "{d_id}"', new_content)
+                                    new_content = re.sub(
+                                        rf'(?m)^target_thread_id\s*=\s*"{o_id}"',
+                                        f'target_thread_id = "{d_id}"',
+                                        new_content,
+                                    )
                                 elif mode == "openai":
-                                    new_content = re.sub(rf'(?m)^target_thread_id\s*=\s*"{d_id}"', f'target_thread_id = "{o_id}"', new_content)
+                                    new_content = re.sub(
+                                        rf'(?m)^target_thread_id\s*=\s*"{d_id}"',
+                                        f'target_thread_id = "{o_id}"',
+                                        new_content,
+                                    )
                         if new_content != acontent:
                             with open(fpath, "w", encoding="utf-8") as af:
                                 af.write(new_content)

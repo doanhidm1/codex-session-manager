@@ -23,12 +23,13 @@ def create_session_backup(source_thread_id, thread_data, source_rollout, target_
         "source_thread_id": source_thread_id,
         "thread_data": thread_data,
         "timestamp": timestamp_str,
-        "target_provider": target_provider
+        "target_provider": target_provider,
     }
     with open(backup_meta_file, "w", encoding="utf-8") as f:
         json.dump(meta_content, f, ensure_ascii=False, indent=2)
 
     return backup_dir, backup_meta_file
+
 
 def rollback_session_backup(target_id, codex_home):
     """Roll back and undo a migrated session from backup snapshot."""
@@ -104,6 +105,7 @@ def rollback_session_backup(target_id, codex_home):
     if created_tid:
         try:
             from .mapping import remove_pair
+
             remove_pair(paths.mapping_db, created_tid)
         except Exception:
             pass

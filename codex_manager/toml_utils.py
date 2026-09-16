@@ -15,6 +15,7 @@ def read_config_toml(config_path):
     except Exception:
         return None
 
+
 def update_config_toml(codex_home, updates):
     """
     Safely update top-level key-values in config.toml without modifying sections,
@@ -35,7 +36,7 @@ def update_config_toml(codex_home, updates):
         return False
 
     # Find boundary before first section header [
-    m = re.search(r'(?m)^\[', text)
+    m = re.search(r"(?m)^\[", text)
     top_end = m.start() if m else len(text)
     top_part = text[:top_end]
     rest = text[top_end:]
@@ -51,7 +52,6 @@ def update_config_toml(codex_home, updates):
             top_part = re.sub(pattern, replacement, top_part)
         else:
             top_part = f"{replacement}" + top_part
-
 
     with open(paths.config_toml, "w", encoding="utf-8") as f:
         f.write(top_part + rest)
