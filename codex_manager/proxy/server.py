@@ -17,7 +17,7 @@ import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .adapter import adapt_responses_body
+from .adapter import adapt_responses_body, get_active_session_mappings
 from .config import (
     DEEPSEEK_UPSTREAM,
     PROXY_HOST,
@@ -25,7 +25,7 @@ from .config import (
     UPSTREAM_CONNECT_TIMEOUT_SEC,
     UPSTREAM_TIMEOUT_SEC,
 )
-from .reconciler import reconcile_delegation_turns
+from .reconciler import reconcile_automations, reconcile_delegation_turns
 
 logger = logging.getLogger("deepseek_proxy.server")
 
@@ -33,11 +33,12 @@ upstream_client: Optional[httpx.AsyncClient] = None
 
 
 async def _background_reconciler_loop():
-    """Periodically reconciles cross-session delegation turns in SQLite."""
+    """Periodically reconciles cross-session delegation turns and automations in background."""
     while True:
         try:
             await asyncio.sleep(2.0)
             reconcile_delegation_turns()
+            reconcile_automations()
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -100,8 +101,11 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
 
     # Intercept and adapt POST /responses
     is_responses_api = request.method == "POST" and "responses" in full_path
+    replacements = []
     if is_responses_api:
         req_body = adapt_responses_body(req_body)
+        oai_to_ds, _ = get_active_session_mappings()
+        replacements = [(oai.encode("utf-8"), ds.encode("utf-8")) for oai, ds in oai_to_ds.items()]
 
     # Filter headers to forward
     excluded_headers = {"host", "content-length", "connection"}
@@ -132,14 +136,31 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
 
         async def stream_generator():
             try:
+                buffer = b""
+                overlap = 35
                 async for chunk in resp.aiter_raw():
-                    yield chunk
+                    if replacements:
+                        buffer += chunk
+                        for oai_b, ds_b in replacements:
+                            buffer = buffer.replace(oai_b, ds_b)
+                        if len(buffer) > overlap:
+                            to_yield = buffer[:-overlap]
+                            buffer = buffer[-overlap:]
+                            yield to_yield
+                    else:
+                        yield chunk
+                if buffer:
+                    if replacements:
+                        for oai_b, ds_b in replacements:
+                            buffer = buffer.replace(oai_b, ds_b)
+                    yield buffer
             finally:
                 await resp.aclose()
-                # If this was a Responses API stream, trigger turn reconciliation in background
+                # If this was a Responses API stream, trigger reconciliation in background
                 if is_responses_api:
                     await asyncio.sleep(0.5)
                     reconcile_delegation_turns()
+                    reconcile_automations()
 
         return StreamingResponse(
             stream_generator(),

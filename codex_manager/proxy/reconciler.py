@@ -160,3 +160,72 @@ def reconcile_delegation_turns(db_path: Optional[str] = None, thread_id: Optiona
     except Exception as e:
         logger.warning("Failed to reconcile delegation turns: %s", e)
         return 0
+
+
+def get_automations_dir(codex_home: Optional[str] = None) -> str:
+    """Returns the path to the automations directory."""
+    if not codex_home:
+        codex_home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    user_prof = os.environ.get("USERPROFILE")
+    default_dir = os.path.join(codex_home, "automations")
+    if not os.path.exists(default_dir) and user_prof:
+        cand = os.path.join(user_prof, ".codex", "automations")
+        if os.path.exists(cand):
+            return cand
+    return default_dir
+
+
+def reconcile_automations(
+    automations_dir: Optional[str] = None,
+    mapping_db_path: Optional[str] = None,
+) -> int:
+    """
+    Scans automation.toml files in ~/.codex/automations.
+    If any target_thread_id or prompt references an OpenAI thread ID with an active
+    DeepSeek clone, it automatically updates it to the DeepSeek clone ID.
+
+    Returns:
+        The number of automation files updated.
+    """
+    if not automations_dir:
+        automations_dir = get_automations_dir()
+
+    if not os.path.isdir(automations_dir):
+        return 0
+
+    from .adapter import get_active_session_mappings
+
+    oai_to_ds, _ = get_active_session_mappings(mapping_db_path)
+    if not oai_to_ds:
+        return 0
+
+    updated_count = 0
+    try:
+        for root, _, files in os.walk(automations_dir):
+            for file in files:
+                if file == "automation.toml":
+                    toml_path = os.path.join(root, file)
+                    try:
+                        with open(toml_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+
+                        modified = False
+                        for oai_id, ds_id in oai_to_ds.items():
+                            if oai_id in content:
+                                content = content.replace(oai_id, ds_id)
+                                modified = True
+
+                        if modified:
+                            with open(toml_path, "w", encoding="utf-8") as f:
+                                f.write(content)
+                            updated_count += 1
+                            logger.info(
+                                "Reconciled automation file %s with active DeepSeek thread ID(s).",
+                                toml_path,
+                            )
+                    except Exception as e:
+                        logger.debug("Failed to reconcile automation file %s: %s", toml_path, e)
+    except Exception as e:
+        logger.warning("Error scanning automations directory: %s", e)
+
+    return updated_count

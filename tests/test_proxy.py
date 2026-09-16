@@ -36,7 +36,7 @@ class TestProxyAdapter(unittest.TestCase):
         dev_msg = adapted_body["input"][0]
         self.assertEqual(dev_msg["role"], "developer")
         self.assertEqual(len(dev_msg["content"]), 2)
-        self.assertEqual(dev_msg["content"][1]["text"], TOOL_DIRECTIVE)
+        self.assertIn(TOOL_DIRECTIVE, dev_msg["content"][1]["text"])
 
         # User message contains reminder
         user_msg = adapted_body["input"][1]
@@ -142,6 +142,69 @@ class TestProxyAdapter(unittest.TestCase):
         self.assertEqual(fco["call_id"], "call_123")
         self.assertEqual(fco["output"], "command success")
 
+    def test_thread_id_remapped_and_registry_injected(self):
+        # Create a temp mapping db
+        gc.collect()
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            mapping_db = os.path.join(tmpdir, "session_manager.sqlite")
+            with sqlite3.connect(mapping_db) as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    CREATE TABLE session_pairs (
+                        pair_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        openai_thread_id TEXT NOT NULL UNIQUE,
+                        deepseek_thread_id TEXT NOT NULL UNIQUE,
+                        created_at INTEGER NOT NULL,
+                        is_active INTEGER DEFAULT 1
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    INSERT INTO session_pairs (pair_id, name, openai_thread_id, deepseek_thread_id, created_at, is_active)
+                    VALUES
+                        ('p1', 'SaaS', '019f675a-28f8-73a3-a5a7-4d3f83560eef', '6f98dfb5-c214-4b40-b653-d5b6b888909c', 100, 1),
+                        ('p2', 'Veo3', '01a07efa-153d-7d70-958c-96eee02279f2', 'dfc26a6f-8de5-449f-aaab-2a0f8578df3b', 100, 1)
+                    """
+                )
+                conn.commit()
+
+            body = {
+                "model": "deepseek-chat",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "Please check thread 01a07efa-153d-7d70-958c-96eee02279f2 and set self 019f675a-28f8-73a3-a5a7-4d3f83560eef",
+                            }
+                        ],
+                    },
+                ],
+            }
+            raw = json.dumps(body).encode("utf-8")
+            adapted_raw = adapt_responses_body(raw, mapping_db_path=mapping_db)
+            adapted_body = json.loads(adapted_raw.decode("utf-8"))
+
+            # Verify historical IDs in user message were replaced
+            user_text = adapted_body["input"][1]["content"][0]["text"]
+            self.assertNotIn("01a07efa-153d-7d70-958c-96eee02279f2", user_text)
+            self.assertIn("dfc26a6f-8de5-449f-aaab-2a0f8578df3b", user_text)
+            self.assertNotIn("019f675a-28f8-73a3-a5a7-4d3f83560eef", user_text)
+            self.assertIn("6f98dfb5-c214-4b40-b653-d5b6b888909c", user_text)
+
+            # Verify developer directive contains active thread registry
+            dev_msg = adapted_body["input"][0]
+            dev_text = dev_msg["content"][0]["text"]
+            self.assertIn("[ACTIVE DEEPSEEK THREAD REGISTRY]", dev_text)
+            self.assertIn("SaaS (ds): 6f98dfb5-c214-4b40-b653-d5b6b888909c", dev_text)
+            self.assertIn("Veo3 (ds): dfc26a6f-8de5-449f-aaab-2a0f8578df3b", dev_text)
+            gc.collect()
+
 
 class TestProxyReconciler(unittest.TestCase):
     def setUp(self):
@@ -234,6 +297,86 @@ class TestProxyReconciler(unittest.TestCase):
             ).fetchone()
             self.assertEqual(row[0], fco_item_id)
             self.assertEqual(row[1], agent_item_id)
+
+    def test_reconcile_automations(self):
+        from codex_manager.proxy.reconciler import reconcile_automations
+
+        mapping_db = os.path.join(self.temp_dir.name, "session_manager.sqlite")
+        with sqlite3.connect(mapping_db) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE session_pairs (
+                    pair_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    openai_thread_id TEXT NOT NULL UNIQUE,
+                    deepseek_thread_id TEXT NOT NULL UNIQUE,
+                    created_at INTEGER NOT NULL,
+                    is_active INTEGER DEFAULT 1
+                )
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO session_pairs (pair_id, name, openai_thread_id, deepseek_thread_id, created_at, is_active)
+                VALUES ('p1', 'SaaS', '019f675a-28f8-73a3-a5a7-4d3f83560eef', '6f98dfb5-c214-4b40-b653-d5b6b888909c', 100, 1)
+                """
+            )
+            conn.commit()
+
+        auto_dir = os.path.join(self.temp_dir.name, "automations", "my-heartbeat")
+        os.makedirs(auto_dir, exist_ok=True)
+        toml_file = os.path.join(auto_dir, "automation.toml")
+        with open(toml_file, "w", encoding="utf-8") as f:
+            f.write(
+                'version = 1\nkind = "heartbeat"\ntarget_thread_id = "019f675a-28f8-73a3-a5a7-4d3f83560eef"\nprompt = "check"\n'
+            )
+
+        updated = reconcile_automations(
+            automations_dir=os.path.join(self.temp_dir.name, "automations"),
+            mapping_db_path=mapping_db,
+        )
+        self.assertEqual(updated, 1)
+
+        with open(toml_file, "r", encoding="utf-8") as f:
+            new_content = f.read()
+        self.assertIn('target_thread_id = "6f98dfb5-c214-4b40-b653-d5b6b888909c"', new_content)
+        self.assertNotIn("019f675a-28f8-73a3-a5a7-4d3f83560eef", new_content)
+
+
+class TestProxyStreaming(unittest.TestCase):
+    def test_sliding_window_replaces_boundary_split_uuid(self):
+        oai = b"019f675a-28f8-73a3-a5a7-4d3f83560eef"
+        ds = b"6f98dfb5-c214-4b40-b653-d5b6b888909c"
+        replacements = [(oai, ds)]
+
+        # Chunk 1 cuts UUID in half
+        chunk1 = b'data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{\\"targetThreadId\\":\\"019f675a-28f8'
+        chunk2 = b'-73a3-a5a7-4d3f83560eef\\"}"}}]}}]}\n\n'
+
+        chunks = [chunk1, chunk2]
+
+        def stream_sim():
+            buffer = b""
+            overlap = 35
+            for c in chunks:
+                if replacements:
+                    buffer += c
+                    for oai_b, ds_b in replacements:
+                        buffer = buffer.replace(oai_b, ds_b)
+                    if len(buffer) > overlap:
+                        to_yield = buffer[:-overlap]
+                        buffer = buffer[-overlap:]
+                        yield to_yield
+            if buffer:
+                for oai_b, ds_b in replacements:
+                    buffer = buffer.replace(oai_b, ds_b)
+                yield buffer
+
+        result = b"".join(stream_sim())
+        self.assertNotIn(oai, result)
+        self.assertIn(ds, result)
+        self.assertEqual(len(result), len(chunk1) + len(chunk2))
 
 
 class TestProxyDaemon(unittest.TestCase):
