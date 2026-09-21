@@ -92,29 +92,20 @@ def split_single_thread(thread_id: str, keep_turns: int = 500, paths: Optional[C
             os.remove(base_rollout)
         return False, f"Could not find split turn start {split_turn_id} in rollout file"
 
-    # 2. Write active continuation rollout
+    # 2. Write active continuation rollout using authentic original line 0
     temp_cont = rollout_path + ".split.tmp"
-    cont_meta = {
-        "timestamp": thread_meta.get("created_at") or "2026-09-02T15:15:39.000Z",
-        "ordinal": split_ordinal - 1,
-        "type": "session_meta",
-        "payload": {
-            "session_id": thread_id,
-            "id": thread_id,
-            "timestamp": thread_meta.get("created_at") or "2026-09-02T15:15:39.000Z",
-            "cwd": thread_meta.get("cwd"),
-            "originator": thread_meta.get("originator") or "Codex Desktop",
-            "cli_version": thread_meta.get("cli_version") or "0.153.4",
-            "source": "continuation",
-            "thread_source": thread_meta.get("thread_source") or "user",
-            "model_provider": thread_meta.get("model_provider") or "openai",
-            "model": thread_meta.get("model"),
-            "history_mode": "paginated",
-        },
-    }
+    cont_meta = json.loads(line0.decode("utf-8"))
+    if "payload" in cont_meta and isinstance(cont_meta["payload"], dict):
+        cont_meta["payload"]["id"] = thread_id
+        cont_meta["payload"]["session_id"] = thread_id
+        cont_meta["payload"]["history_mode"] = "paginated"
+        cont_meta["payload"]["source"] = "vscode"
+        cont_meta["payload"]["thread_source"] = "user"
+        cont_meta["payload"]["originator"] = "Codex Desktop"
+    clean_cont_line0 = json.dumps(cont_meta, ensure_ascii=False).encode("utf-8") + b"\n"
 
     with open(rollout_path, "rb") as src, open(temp_cont, "wb") as dst_cont:
-        dst_cont.write(json.dumps(cont_meta, ensure_ascii=False).encode("utf-8") + b"\n")
+        dst_cont.write(clean_cont_line0)
         src.seek(split_byte_pos)
         while True:
             line = src.readline()
@@ -171,7 +162,9 @@ def split_single_thread(thread_id: str, keep_turns: int = 500, paths: Optional[C
         """
         UPDATE threads
         SET history_mode = 'paginated',
+            source = 'vscode',
             thread_source = 'user',
+            originator = 'Codex Desktop',
             created_at = COALESCE(?, created_at),
             created_at_ms = COALESCE(? * 1000, created_at_ms),
             first_user_message = COALESCE(?, first_user_message),

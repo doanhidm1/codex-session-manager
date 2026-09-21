@@ -159,6 +159,13 @@ def stream_turn_wire_records(
                 itype_raw = it.get("type", "")
                 iid = it.get("id", "")
 
+                if (
+                    tgt_prov == "openai"
+                    and itype_raw in ("reasoning", "Reasoning")
+                    and not (it.get("encrypted_content") or "").startswith("gAAAAAB")
+                ):
+                    continue
+
                 is_converted_xml = False
                 # DeepSeek API compatibility: synthetic tool call outputs must be standard user XML
                 if tgt_prov != "openai" and itype_raw == "FunctionCallOutput":
@@ -176,6 +183,11 @@ def stream_turn_wire_records(
                         it.pop("namespace", None)
                         itype_raw = "UserMessage"
                         is_converted_xml = True
+
+                if tgt_prov == "openai" and itype_raw in ("UserMessage", "userMessage", "AgentMessage", "agentMessage"):
+                    if iid and not iid.startswith("msg"):
+                        iid = "msg_" + (iid[4:] if iid.startswith("fco_") else iid)
+                        it["id"] = iid
 
                 if itype_raw in ("UserMessage", "userMessage"):
                     if not first_user_item_id:
@@ -282,8 +294,20 @@ def stream_turn_wire_records(
             p["model"] = tgt_model
 
         elif rec_type == "response_item":
-            if tgt_prov != "openai":
-                ptype = p.get("type")
+            ptype = p.get("type")
+            if tgt_prov == "openai":
+                if ptype == "reasoning":
+                    enc = p.get("encrypted_content") or ""
+                    if not enc.startswith("gAAAAAB"):
+                        # Non-OpenAI reasoning item: OpenAI server cannot decrypt foreign encrypted_content.
+                        # Omitting it prevents: "The encrypted content ... could not be verified."
+                        continue
+                    p["content"] = None
+                elif ptype == "message":
+                    mid = p.get("id") or ""
+                    if mid and not mid.startswith("msg"):
+                        p["id"] = "msg_" + (mid[4:] if mid.startswith("fco_") else mid)
+            else:
                 if ptype == "function_call_output":
                     pname = p.get("name")
                     out_str = p.get("output", "")

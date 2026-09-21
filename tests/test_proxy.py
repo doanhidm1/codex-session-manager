@@ -378,6 +378,61 @@ class TestProxyStreaming(unittest.TestCase):
         self.assertIn(ds, result)
         self.assertEqual(len(result), len(chunk1) + len(chunk2))
 
+    def test_delegation_tool_adaptation_in_history(self):
+        body = {
+            "model": "deepseek-chat",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_grok_1",
+                    "name": "send_message_to_thread",
+                    "namespace": "codex_app",
+                    "arguments": '{"threadId": "test-id", "prompt": "hi"}',
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_grok_2",
+                    "name": "mcp__codex_app__send_message_to_thread",
+                    "arguments": '{"threadId": "test-id", "prompt": "hi"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_grok_1",
+                    "name": "send_message_to_thread",
+                    "namespace": "codex_app",
+                    "output": "ok",
+                },
+            ],
+        }
+        raw = json.dumps(body).encode("utf-8")
+        adapted_raw = adapt_responses_body(raw)
+        adapted_body = json.loads(adapted_raw.decode("utf-8"))
+
+        # Note: index 0 is the injected developer message with TOOL_DIRECTIVE
+        fc1 = adapted_body["input"][1]
+        self.assertEqual(fc1["namespace"], "mcp__codex_app")
+        self.assertEqual(fc1["name"], "send_message_to_thread")
+
+        fc2 = adapted_body["input"][2]
+        self.assertEqual(fc2["namespace"], "mcp__codex_app")
+        self.assertEqual(fc2["name"], "send_message_to_thread")
+
+        fco1 = adapted_body["input"][3]
+        self.assertEqual(fco1["namespace"], "mcp__codex_app")
+
+    def test_delegation_stream_replacements(self):
+        from codex_manager.proxy.server import DELEGATION_STREAM_REPLACEMENTS
+
+        raw_chunk = b'data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"mcp__codex_app__send_message_to_thread","namespace":"codex_app"}}]}}]}\n\n'
+        processed = raw_chunk
+        for pat, repl in DELEGATION_STREAM_REPLACEMENTS:
+            processed = processed.replace(pat, repl)
+
+        self.assertNotIn(b'"namespace":"codex_app"', processed)
+        self.assertIn(b'"namespace":"mcp__codex_app"', processed)
+        self.assertNotIn(b'"name":"mcp__codex_app__send_message_to_thread"', processed)
+        self.assertIn(b'"name":"send_message_to_thread"', processed)
+
 
 class TestProxyDaemon(unittest.TestCase):
     def test_status_structure(self):

@@ -39,3 +39,5 @@ class CodexPaths:
         self.sessions_dir = os.path.join(self.codex_home, "sessions")
         self.mapping_db = os.path.join(self.codex_home, "session_manager.sqlite")
         self.config_toml = os.path.join(self.codex_home, "config.toml")
+        self.global_state = os.path.join(self.codex_home, ".codex-global-state.json")
+        self.models_json = os.path.join(self.codex_home, "models.json")

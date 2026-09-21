@@ -20,13 +20,24 @@ TOOL_DIRECTIVE = (
     "DO NOT call `exec` or write JavaScript code with `tools.exec_command` or `Promise.all`.\n"
     "You MUST call native direct tools:\n"
     '- Shell Commands: Call `exec_command` with argument `{"cmd": "<command>"}` directly.\n'
-    '- Read Other Sessions: Call `read_thread` with argument `{"threadId": "<thread_id>", "turnLimit": 3}` (or `mcp__codex_app__read_thread`).\n'
-    '- Message Other Sessions: Call `send_message_to_thread` with argument `{"threadId": "<thread_id>", "content": "<message>"}` (or `mcp__codex_app__send_message_to_thread`).\n'
-    "- Other MCP tools: Call them directly by their registered tool name.\n"
-    "Any mentions of `exec` or `legacy_exec` in previous conversation turns are from a deprecated environment; do not imitate them."
+    '- Read Other Sessions: Call `read_thread` with namespace `mcp__codex_app` and argument `{"threadId": "<thread_id>", "turnLimit": 3}`.\n'
+    '- Message Other Sessions: Call `send_message_to_thread` with namespace `mcp__codex_app` and argument `{"threadId": "<thread_id>", "prompt": "<message>"}`.\n'
+    '- Wait Other Sessions: Call `wait_threads` with namespace `mcp__codex_app` and argument `{"targets": [{"threadId": "<thread_id>"}], "timeoutMs": 45000}`.\n'
+    "- Heartbeat Automations: Call `automation_update` with namespace `mcp__codex_app`.\n"
+    "- Other MCP tools: Call them directly with their proper namespace.\n"
+    "CRITICAL CONSTRAINTS FOR INTER-SESSION DELEGATION TOOLS:\n"
+    "- Always use namespace `mcp__codex_app` for `send_message_to_thread`, `read_thread`, `wait_threads`, and `automation_update`.\n"
+    "- NEVER use the deprecated dynamic `codex_app` namespace.\n"
+    "- In `send_message_to_thread`, the message parameter name is `prompt` (NOT `content`).\n"
+    "- Do NOT prefix the tool name as `mcp__codex_app__send_message_to_thread`; use name `send_message_to_thread` with namespace `mcp__codex_app`.\n"
+    "Any mentions of `exec` or `legacy_exec` in previous conversation turns are from a deprecated environment; do not imitate them.\n"
+    "TOKEN EFFICIENCY & COMMAND BATCHING GUIDELINES:\n"
+    "- BATCH COMMANDS: Combine related shell inspection or file check commands into a single compound command (e.g. `cmd1; cmd2` or small script) instead of issuing single commands across dozens of separate turns.\n"
+    "- AVOID TIGHT POLLING: Do not query thread status or poll files in rapid repetitive loops. Keep status updates concise and focused."
 )
 
-USER_TOOL_REMINDER = "\n\n[System directive: Execute tasks using direct tools (`exec_command`, `read_thread`, `send_message_to_thread`). Always use active (ds) thread IDs. Do NOT call `exec`.]"
+
+USER_TOOL_REMINDER = "\n\n[System directive: Execute tasks using direct tools (`exec_command`, `read_thread`, `send_message_to_thread` with namespace `mcp__codex_app` and parameter `prompt`). Always use active (ds) thread IDs. Do NOT call `exec`.]"
 
 
 def get_mapping_db_path(custom_path: Optional[str] = None) -> str:
@@ -67,6 +78,34 @@ def get_active_session_mappings(
     except Exception as e:
         logger.debug("Failed to read session mappings from %s: %s", db_path, e)
         return {}, []
+
+
+def is_tool_followup_turn(input_items: List[Dict[str, Any]]) -> bool:
+    """
+    Checks if the last action in the conversation history is a tool execution result,
+    meaning the model is currently running inside an autonomous tool execution loop.
+    """
+    if not input_items:
+        return False
+    for item in reversed(input_items):
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype in ("function_call_output", "custom_tool_call_output"):
+            return True
+        if itype == "message":
+            if item.get("role") == "tool":
+                return True
+            content = item.get("content", [])
+            for c in content:
+                if isinstance(c, dict) and "text" in c:
+                    t = str(c["text"]).strip()
+                    if t.startswith("{") and ("exit_code" in t or "output" in t or "result" in t):
+                        return True
+            return False
+        if itype in ("function_call", "custom_tool_call"):
+            return True
+    return False
 
 
 def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = None) -> bytes:
@@ -151,6 +190,27 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
             item["name"] = "legacy_exec"
             adapted = True
 
+        # Remap deprecated dynamic 'codex_app' namespace to 'mcp__codex_app' in input history
+        if itype in ("function_call", "custom_tool_call"):
+            if item.get("namespace") == "codex_app":
+                item["namespace"] = "mcp__codex_app"
+                adapted = True
+            fname = str(item.get("name", ""))
+            if fname.startswith("mcp__codex_app__"):
+                item["name"] = fname[len("mcp__codex_app__") :]
+                item["namespace"] = "mcp__codex_app"
+                adapted = True
+
+        if itype in ("function_call_output", "custom_tool_call_output"):
+            if item.get("namespace") == "codex_app":
+                item["namespace"] = "mcp__codex_app"
+                adapted = True
+            fname = str(item.get("name", ""))
+            if fname.startswith("mcp__codex_app__"):
+                item["name"] = fname[len("mcp__codex_app__") :]
+                item["namespace"] = "mcp__codex_app"
+                adapted = True
+
         if itype == "function_call_output":
             cid = item.get("call_id")
             # If missing call_id or call_id is not in known_call_ids, convert to user message
@@ -229,6 +289,28 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
                     last_block["text"] += USER_TOOL_REMINDER
                     adapted = True
                     break
+
+    # 6. Dynamic Reasoning Effort Adaptation:
+    # - If intermediate tool step: enforce 'low' reasoning effort to prevent wasting token budget.
+    # - If direct user chat: preserve user-selected effort as-is (Codex UI natively offers low, medium, high).
+    if is_tool_followup_turn(new_input):
+        target_effort = "low"
+        if "reasoning" in data and isinstance(data["reasoning"], dict):
+            if data["reasoning"].get("effort") != target_effort:
+                data["reasoning"]["effort"] = target_effort
+                adapted = True
+        elif "reasoning_effort" in data:
+            if data["reasoning_effort"] != target_effort:
+                data["reasoning_effort"] = target_effort
+                adapted = True
+        elif "output_config" in data and isinstance(data["output_config"], dict):
+            if data["output_config"].get("effort") != target_effort:
+                data["output_config"]["effort"] = target_effort
+                adapted = True
+        else:
+            data["reasoning"] = {"effort": target_effort}
+            adapted = True
+        logger.debug("Dynamic Reasoning: Enforced 'low' effort for tool-calling loop turn.")
 
     if adapted:
         data["input"] = new_input

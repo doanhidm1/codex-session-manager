@@ -40,6 +40,9 @@ def switch_provider_settings(codex_home, target_provider):
     if not target_model:
         target_model, target_effort = detect_current_provider_settings(codex_home, target_prov)
 
+    if target_prov == "deepseek" and target_effort not in ("low", "high", "max"):
+        target_effort = "high"
+
     updates = {
         "model_provider": target_prov,
         "model": target_model,
@@ -117,6 +120,9 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
         print(
             f"[*] Configuration updated in config.toml: provider='{mode}', model='{restored_model}', reasoning_effort='{restored_effort}'"
         )
+        from .reasoning import ensure_reasoning_efforts
+
+        ensure_reasoning_efforts(codex_home, verbose=True)
 
     from .discovery import discover_and_pair_unmapped_threads
 

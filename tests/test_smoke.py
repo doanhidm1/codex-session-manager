@@ -88,7 +88,10 @@ class TestCodexManagerSmoke(unittest.TestCase):
         self.assertTrue(is_clean, f"Lock check failed: {reason}")
         running = detect_running_sessions(home, threshold_sec=60)
         self.assertIsInstance(running, list)
-        self.assertTrue(assert_no_running_sessions(home))
+        if not running:
+            self.assertTrue(assert_no_running_sessions(home))
+        else:
+            self.assertFalse(assert_no_running_sessions(home))
 
     def test_pair_health_and_force_rebuild(self):
         home = get_default_codex_home()

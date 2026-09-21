@@ -208,6 +208,8 @@ def switch_provider_settings(codex_home, target_provider):
     target_model, target_effort = get_last_provider_settings(paths.mapping_db, target_prov)
     if not target_model:
         target_model, target_effort = detect_current_provider_settings(codex_home, target_prov)
+    if target_prov == "deepseek" and target_effort not in ("low", "high", "max"):
+        target_effort = "high"
 
     # 3. Update config.toml
     update_config_toml(

@@ -41,6 +41,7 @@ class TestSplitModule(unittest.TestCase):
                     cwd TEXT,
                     model_provider TEXT,
                     model TEXT,
+                    source TEXT,
                     thread_source TEXT,
                     history_mode TEXT,
                     first_user_message TEXT,

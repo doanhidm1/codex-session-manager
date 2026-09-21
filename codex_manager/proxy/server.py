@@ -94,6 +94,28 @@ async def shutdown():
     return {"status": "shutting_down"}
 
 
+DELEGATION_STREAM_REPLACEMENTS = [
+    # Fix deprecated dynamic namespace to MCP namespace
+    (b'"namespace":"codex_app"', b'"namespace":"mcp__codex_app"'),
+    (b'"namespace": "codex_app"', b'"namespace": "mcp__codex_app"'),
+    # Fix prefixed tool names to standard MCP tool + namespace
+    (
+        b'"name":"mcp__codex_app__send_message_to_thread"',
+        b'"name":"send_message_to_thread","namespace":"mcp__codex_app"',
+    ),
+    (
+        b'"name": "mcp__codex_app__send_message_to_thread"',
+        b'"name": "send_message_to_thread", "namespace": "mcp__codex_app"',
+    ),
+    (b'"name":"mcp__codex_app__read_thread"', b'"name":"read_thread","namespace":"mcp__codex_app"'),
+    (b'"name": "mcp__codex_app__read_thread"', b'"name": "read_thread", "namespace": "mcp__codex_app"'),
+    (b'"name":"mcp__codex_app__wait_threads"', b'"name":"wait_threads","namespace":"mcp__codex_app"'),
+    (b'"name": "mcp__codex_app__wait_threads"', b'"name": "wait_threads", "namespace": "mcp__codex_app"'),
+    (b'"name":"mcp__codex_app__automation_update"', b'"name":"automation_update","namespace":"mcp__codex_app"'),
+    (b'"name": "mcp__codex_app__automation_update"', b'"name": "automation_update", "namespace": "mcp__codex_app"'),
+]
+
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"])
 async def proxy_all(request: Request, background_tasks: BackgroundTasks):
     full_path = "/" + request.path_params.get("path", "")
@@ -106,6 +128,7 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
         req_body = adapt_responses_body(req_body)
         oai_to_ds, _ = get_active_session_mappings()
         replacements = [(oai.encode("utf-8"), ds.encode("utf-8")) for oai, ds in oai_to_ds.items()]
+        replacements.extend(DELEGATION_STREAM_REPLACEMENTS)
 
     # Filter headers to forward
     excluded_headers = {"host", "content-length", "connection"}
@@ -137,7 +160,7 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
         async def stream_generator():
             try:
                 buffer = b""
-                overlap = 35
+                overlap = 80
                 async for chunk in resp.aiter_raw():
                     if replacements:
                         buffer += chunk

@@ -33,6 +33,7 @@ Main commands:
     migrate <id> [provider]        Clone a session to target provider (default: deepseek)
     rollback [id]                  Undo a cloned session from latest backup snapshot
     split <name|id> [turns]        Split session to keep recent turns (default: 500) and archive older history
+    fix-reasoning                  Ensure Codex Desktop & models.json always have low, high, max
 
 Global options:
     --codex-home <path>            Specify custom .codex home directory (auto-detected by default)
@@ -206,6 +207,19 @@ def main():
         print(f"  OpenAI   : model='{oai_m}', reasoning_effort='{oai_e}'")
         print(f"  DeepSeek : model='{ds_m}', reasoning_effort='{ds_e}'")
 
+        from .reasoning import get_reasoning_status
+
+        r_stat = get_reasoning_status(codex_home)
+        print("\n[Reasoning Effort Levels]")
+        if r_stat["global_ok"]:
+            print(f"  Codex UI   : [OK] low, high, max enabled in settings ({r_stat['global_efforts']})")
+        else:
+            print(f"  Codex UI   : [WARNING] Missing required levels in settings ({r_stat['global_efforts']})")
+        if r_stat["catalog_ok"]:
+            print("  DeepSeek   : [OK] Catalog has low, high, max (default: high)")
+        else:
+            print(f"  DeepSeek   : [WARNING] Catalog mismatch: {r_stat['deepseek_models']}")
+
         from .proxy.daemon import get_proxy_status
 
         p_stat = get_proxy_status()
@@ -294,9 +308,17 @@ def main():
             )
         else:
             print(f"[-] Offset sync failed: {sync_res.get('error')}")
+    elif cmd in ("fix-reasoning", "reasoning"):
+        from .reasoning import ensure_reasoning_efforts
+
+        ensure_reasoning_efforts(codex_home, verbose=True)
     else:
         print(f"Unknown command: '{cmd}'")
         print_help()
         return 1
 
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
