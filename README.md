@@ -18,8 +18,10 @@ A zero-dependency, cross-platform CLI tool and Python library for managing, migr
 2. **1M Context Window & Compaction Threshold Protection:**
    - Automatically maintains `model_context_window = 1000000` and `model_auto_compact_token_limit = 900000` in `config.toml`.
    - Prevents OpenAI sessions from prematurely compacting at default lower thresholds (~588k tokens / 70%) and enables long multi-turn sessions (up to 1,000,000 tokens) to run smoothly.
-3. **Model & Reasoning Effort Preservation:**
+3. **Model & Reasoning Effort Preservation & UI Guard (`low`, `high`, `max`):**
    - Automatically remembers and restores the exact model and reasoning effort settings last used for each provider (e.g. `gpt-5.6-terra` / `high` on OpenAI, `deepseek-flash` / `high` on DeepSeek).
+   - Strictly conforms to DeepSeek's official spec: `low`, `high`, and `max` (default `high`, no `medium`).
+   - Automatically audits and repairs `.codex-global-state.json` atom state (`enabled-reasoning-efforts`), preventing Codex Desktop from silently hiding the `Max` notch on the slider even if unticked in settings.
 4. **Automatic New Thread Discovery & Suffix Tagging:**
    - Automatically detects any new session created while working in DeepSeek (or OpenAI) mode when switching.
    - Clones a synchronized counterpart on the destination provider, pairs them in the mapping database, and tags the DeepSeek session name with `(ds)` for clear visual distinction.
@@ -35,8 +37,9 @@ A zero-dependency, cross-platform CLI tool and Python library for managing, migr
 9. **Active Running Session Protection:**
    - Detects whether Codex is actively generating a response or running tools (via `thread_history_1.sqlite` status `inProgress` and live rollout write timestamps).
    - Automatically halts `switch` and `sync` operations with a clear, detailed warning to prevent SQLite database locks (`database is locked`) or corrupted rollout logs (overridable with `--force`).
-10. **DeepSeek Reverse Proxy Protocol Adapter (Port 8765):**
+10. **DeepSeek Reverse Proxy Protocol Adapter (Port 8765) & Thread ID Remapping:**
     - Intercepts Responses API streaming requests to DeepSeek, neutralizes legacy code-mode `name: "exec"` calls in historical context into `legacy_exec` to prevent few-shot hallucination, and injects direct tool directives (`exec_command(cmd="...")`).
+    - Injects `[ACTIVE DEEPSEEK THREAD REGISTRY]` and remaps thread IDs during tool executions (`automation_update`, `send_message_to_thread`, `read_thread`) so heartbeat automations and inter-session communication target active DeepSeek threads instead of legacy OpenAI IDs.
     - Automatically managed lifecycle: switching to DeepSeek automatically starts the daemon, switching to OpenAI stops it to free resources.
     - Continuous background reconciler loop (every 2s) repairs `first_user_item_id` in SQLite so `read_thread` returns full inter-session communication results seamlessly.
     - Includes Desktop 1-click manager (`proxy-deepseek.bat`, `DeepSeek Proxy.lnk`) with Windows startup boot support.
@@ -84,6 +87,7 @@ codex-session-manager/
 │   │   ├── daemon.py          # Lifecycle management (start, stop, status, health check)
 │   │   ├── reconciler.py      # Background reconciler (repairs first_user_item_id)
 │   │   └── server.py          # FastAPI streaming reverse proxy with async pool
+│   ├── reasoning.py           # Auto-enforce reasoning efforts (low, high, max) in UI & catalog
 │   ├── repair/                # Rollout Line Auditor & SQLite Repair Engine
 │   │   ├── __init__.py
 │   │   ├── audit.py           # JSONL syntax and schema gap analyzer
@@ -106,6 +110,7 @@ codex-session-manager/
 │   └── switch-openai.sh       # macOS/Linux: 1-click sync & switch to OpenAI
 └── tests/
     ├── test_proxy.py          # Proxy adapter, daemon, and reconciler test suite
+    ├── test_reasoning.py      # Reasoning effort verification and UI repair tests
     ├── test_repair.py         # Rollout repair and JSONL auditor tests
     ├── test_smoke.py          # Core workflow and sync smoke tests
     └── test_split.py          # Session splitter and partition tests
@@ -244,7 +249,7 @@ python codex_migrator.py pair remove <name_or_id>
 # Detect if any Codex session is currently executing or generating
 python codex_migrator.py running
 
-# Run pre-flight checks (DeepSeek config, running sessions, database health, model settings)
+# Run pre-flight checks (DeepSeek config, running sessions, database health, reasoning effort levels, model settings)
 python codex_migrator.py doctor
 
 # List all threads across state_5.sqlite
@@ -297,7 +302,15 @@ Prevent massive multi-turn sessions (e.g. >500 turns) from causing UI lag or mem
 python codex_migrator.py split "SaaS" 500
 ```
 
-#### 10. Safety, Lock Protection & `--force` Recovery
+#### 10. Reasoning Effort Protection & Repair (`fix-reasoning`)
+DeepSeek officially declares 3 reasoning effort levels: `low` (Light), `high` (High), and `max` (Max) with default `high` and no `medium`. Codex Desktop filters model reasoning efforts using `enabled-reasoning-efforts` in its global atom state, which silently drops `max` if unticked in settings. The manager automatically verifies and re-enables `max` whenever `switch` runs. You can also run the audit and repair manually:
+
+```bash
+# Verify and enforce low, high, max in Codex Desktop global state and models.json
+python codex_migrator.py fix-reasoning
+```
+
+#### 11. Safety, Lock Protection & `--force` Recovery
 - **Lock & Active Turn Detection**: The system strictly checks that Codex is completely idle before allowing `switch` or `sync`. It verifies that:
   1. No turns are `inProgress` or generating.
   2. All SQLite databases (`state_5.sqlite`, `thread_history_1.sqlite`, `session_manager.sqlite`) are clean and lockable via `BEGIN EXCLUSIVE`.
