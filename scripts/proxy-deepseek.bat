@@ -2,25 +2,31 @@
 chcp 65001 >nul
 title DeepSeek Reverse Proxy Manager
 
+if exist "%~dp0..\codex_migrator.py" (
+    set "MIGRATOR=%~dp0..\codex_migrator.py"
+) else (
+    set "MIGRATOR=D:\codex-session-manager\codex_migrator.py"
+)
+
 :menu
 cls
 echo ====================================================================
 echo             CODEX DEEPSEEK REVERSE PROXY MANAGER (PORT 8765)
 echo ====================================================================
 echo.
-python "D:\codex-session-manager\codex_migrator.py" proxy status
+python "%MIGRATOR%" proxy status
 echo.
 echo --------------------------------------------------------------------
-echo   [1] Start Proxy (Bat daemon ngam)
-echo   [2] Stop Proxy (Tat daemon)
-echo   [3] Restart Proxy (Khoi dong lai daemon)
-echo   [4] Kiem tra trang thai chi tiet (Status)
-echo   [5] Bat tu khoi dong cung Windows (Auto-start on Boot)
-echo   [6] Tat tu khoi dong cung Windows
-echo   [0] Thoat
+echo   [1] Start Proxy (Run background daemon)
+echo   [2] Stop Proxy (Terminate daemon)
+echo   [3] Restart Proxy (Reload daemon)
+echo   [4] Check Status (Detailed status)
+echo   [5] Enable Auto-start on Windows Boot
+echo   [6] Disable Auto-start on Windows Boot
+echo   [0] Exit
 echo --------------------------------------------------------------------
 set "choice="
-set /p choice="Nhap lua chon [1-6, 0] (Mac dinh 1: Start Proxy): "
+set /p choice="Enter choice [1-6, 0] (Default 1: Start Proxy): "
 
 if "%choice%"=="" goto start_proxy
 if "%choice%"=="1" goto start_proxy
@@ -34,47 +40,47 @@ goto menu
 
 :start_proxy
 echo.
-echo [*] Dang kiem tra va khoi dong DeepSeek Reverse Proxy...
-python "D:\codex-session-manager\codex_migrator.py" proxy start
+echo [*] Checking and starting DeepSeek Reverse Proxy...
+python "%MIGRATOR%" proxy start
 echo.
 pause
 goto menu
 
 :stop_proxy
 echo.
-echo [*] Dang dung DeepSeek Reverse Proxy...
-python "D:\codex-session-manager\codex_migrator.py" proxy stop
+echo [*] Stopping DeepSeek Reverse Proxy...
+python "%MIGRATOR%" proxy stop
 echo.
 pause
 goto menu
 
 :restart_proxy
 echo.
-echo [*] Dang khoi dong lai DeepSeek Reverse Proxy...
-python "D:\codex-session-manager\codex_migrator.py" proxy restart
+echo [*] Restarting DeepSeek Reverse Proxy...
+python "%MIGRATOR%" proxy restart
 echo.
 pause
 goto menu
 
 :check_status
 echo.
-python "D:\codex-session-manager\codex_migrator.py" proxy status
+python "%MIGRATOR%" proxy status
 echo.
 pause
 goto menu
 
 :enable_autostart
 echo.
-echo [*] Dang thiet lap tu khoi dong cung Windows (Startup)...
-python "D:\codex-session-manager\codex_migrator.py" proxy enable-autostart
+echo [*] Setting up auto-start on Windows boot (Startup)...
+python "%MIGRATOR%" proxy enable-autostart
 echo.
 pause
 goto menu
 
 :disable_autostart
 echo.
-echo [*] Dang go bo tu khoi dong cung Windows...
-python "D:\codex-session-manager\codex_migrator.py" proxy disable-autostart
+echo [*] Removing auto-start on Windows boot...
+python "%MIGRATOR%" proxy disable-autostart
 echo.
 pause
 goto menu
