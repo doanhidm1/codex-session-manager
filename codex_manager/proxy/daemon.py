@@ -109,3 +109,49 @@ def stop_proxy_daemon(host: str = PROXY_HOST, port: int = PROXY_PORT) -> bool:
         time.sleep(0.2)
 
     return not is_proxy_running(host, port)
+
+
+def enable_autostart() -> bool:
+    """Configures the proxy to start automatically on Windows boot."""
+    if sys.platform != "win32":
+        return False
+    startup_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+    if not os.path.exists(startup_dir):
+        return False
+    shortcut_path = os.path.join(startup_dir, "Start-DeepSeek-Proxy.lnk")
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    proxy_script = os.path.join(repo_root, "codex_manager", "deepseek_proxy.py")
+    try:
+        ps_script = (
+            f"$ws = New-Object -ComObject WScript.Shell; "
+            f"$s = $ws.CreateShortcut('{shortcut_path}'); "
+            f"$s.TargetPath = 'pythonw.exe'; "
+            f"$s.Arguments = '\"{proxy_script}\"'; "
+            f"$s.WorkingDirectory = '{repo_root}'; "
+            f"$s.WindowStyle = 7; "
+            f"$s.Save()"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+            check=True,
+            capture_output=True,
+        )
+        return True
+    except Exception as e:
+        logger.error("Failed to enable autostart: %s", e)
+        return False
+
+
+def disable_autostart() -> bool:
+    """Removes the proxy autostart shortcut from Windows Startup."""
+    if sys.platform != "win32":
+        return False
+    startup_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+    shortcut_path = os.path.join(startup_dir, "Start-DeepSeek-Proxy.lnk")
+    try:
+        if os.path.exists(shortcut_path):
+            os.remove(shortcut_path)
+        return True
+    except Exception as e:
+        logger.error("Failed to disable autostart: %s", e)
+        return False

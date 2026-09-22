@@ -263,8 +263,24 @@ def main():
             else:
                 print("[-] Failed to restart DeepSeek proxy daemon.")
                 return 1
+        elif action in ("enable-autostart", "autostart-enable", "autostart"):
+            from .proxy.daemon import enable_autostart
+
+            if enable_autostart():
+                print("[+] Auto-start on Windows boot enabled successfully!")
+            else:
+                print("[-] Failed to enable auto-start on Windows boot.")
+                return 1
+        elif action in ("disable-autostart", "autostart-disable"):
+            from .proxy.daemon import disable_autostart
+
+            if disable_autostart():
+                print("[+] Auto-start on Windows boot disabled.")
+            else:
+                print("[-] Failed to disable auto-start on Windows boot.")
+                return 1
         else:
-            print(f"Unknown proxy action '{action}'. Options: status, start, stop, restart")
+            print(f"Unknown proxy action '{action}'. Options: status, start, stop, restart, enable-autostart, disable-autostart")
             return 1
     elif cmd == "reconcile":
         from .proxy.reconciler import reconcile_delegation_turns
