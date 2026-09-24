@@ -60,12 +60,7 @@ def normalize_command_execution(raw_item: dict) -> dict:
     elif src_raw not in ("agent", "userShell", "unifiedExecStartup", "unifiedExecInteraction"):
         src_raw = "unifiedExecStartup"
 
-    agg_out = (
-        item.get("aggregated_output")
-        or item.get("aggregatedOutput")
-        or item.get("stdout")
-        or ""
-    )
+    agg_out = item.get("aggregated_output") or item.get("aggregatedOutput") or item.get("stdout") or ""
 
     exit_code = item.get("exit_code") if "exit_code" in item else item.get("exitCode", 0)
 
@@ -313,6 +308,37 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                         if e_payload.get("error"):
                             p_turns[tid]["status"] = "failed"
                             p_turns[tid]["error_json"] = json.dumps(e_payload["error"], ensure_ascii=False)
+            elif e_type == "response_item":
+                if p_type == "message" and e_payload.get("role") == "user":
+                    iid = e_payload.get("id")
+                    raw_c = e_payload.get("content", [])
+                    clean_text = ""
+                    for part in raw_c:
+                        if isinstance(part, dict) and "text" in part:
+                            clean_text += part["text"]
+                        elif isinstance(part, str):
+                            clean_text += part
+                    clean_item = {
+                        "type": "userMessage",
+                        "id": iid,
+                        "content": [{"type": "text", "text": clean_text}],
+                        "clientId": None,
+                    }
+                    tid = p_curr_tid
+                    if tid and tid in p_turns and not p_turns[tid]["first_user_item_id"]:
+                        p_turns[tid]["first_user_item_id"] = iid
+                    p_items.append(
+                        {
+                            "thread_id": thread_id,
+                            "turn_id": tid,
+                            "item_id": iid,
+                            "rollout_ordinal": ord_val,
+                            "created_at_ms": now_ms,
+                            "item_json": json.dumps(clean_item, ensure_ascii=False),
+                            "item_type": "userMessage",
+                            "updated_at_ordinal": ord_val,
+                        }
+                    )
 
     th_conn = sqlite3.connect(normalize_path(th_db), timeout=10.0)
     th_cur = th_conn.cursor()

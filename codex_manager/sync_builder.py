@@ -165,7 +165,8 @@ def stream_turn_wire_records(
                     and itype_raw in ("reasoning", "Reasoning")
                     and not (it.get("encrypted_content") or "").startswith("gAAAAAB")
                 ):
-                    continue
+                    if not (source_items_map and iid in source_items_map):
+                        continue
 
                 is_converted_xml = False
                 # DeepSeek API compatibility: synthetic tool call outputs must be standard user XML
@@ -203,9 +204,11 @@ def stream_turn_wire_records(
                 if not is_converted_xml and source_items_map and iid in source_items_map:
                     src_itype, src_ijson = source_items_map[iid]
                     if src_itype == "commandExecution" and "unified_exec_" in src_ijson:
-                        src_ijson = src_ijson.replace('"unified_exec_startup"', '"unifiedExecStartup"').replace(
-                            '"unified_exec_interaction"', '"unifiedExecInteraction"'
-                        ).replace('"user_shell"', '"userShell"')
+                        src_ijson = (
+                            src_ijson.replace('"unified_exec_startup"', '"unifiedExecStartup"')
+                            .replace('"unified_exec_interaction"', '"unifiedExecInteraction"')
+                            .replace('"user_shell"', '"userShell"')
+                        )
                     final_item_json = src_ijson
                     final_item_type = src_itype
                 else:
@@ -273,12 +276,45 @@ def stream_turn_wire_records(
 
         elif rec_type == "response_item":
             ptype = p.get("type")
-            if tgt_prov == "openai":
+            if ptype == "message" and p.get("role") == "user":
+                mid = p.get("id") or ""
+                if tgt_prov == "openai" and mid and not mid.startswith("msg"):
+                    mid = "msg_" + (mid[4:] if mid.startswith("fco_") else mid)
+                    p["id"] = mid
+                if not first_user_item_id:
+                    first_user_item_id = mid
+                if not any(im.get("item_id") == mid for im in item_metas):
+                    raw_c = p.get("content", [])
+                    clean_text = ""
+                    for part in raw_c:
+                        if isinstance(part, dict) and "text" in part:
+                            clean_text += part["text"]
+                        elif isinstance(part, str):
+                            clean_text += part
+                    clean_item = {
+                        "type": "userMessage",
+                        "id": mid,
+                        "content": [{"type": "text", "text": clean_text}],
+                        "clientId": None,
+                    }
+                    item_metas.append(
+                        {
+                            "thread_id": tgt_id,
+                            "turn_id": tid,
+                            "item_id": mid,
+                            "rollout_ordinal": rec_ord,
+                            "created_at_ms": rec_ts_ms,
+                            "item_json": json.dumps(clean_item, ensure_ascii=False),
+                            "item_type": "userMessage",
+                            "updated_at_ordinal": rec_ord,
+                        }
+                    )
+            elif tgt_prov == "openai":
                 if ptype == "reasoning":
                     enc = p.get("encrypted_content") or ""
                     if not enc.startswith("gAAAAAB"):
                         # Non-OpenAI reasoning item: OpenAI server cannot decrypt foreign encrypted_content.
-                        # Omitting it prevents: "The encrypted content ... could not be verified."
+                        # Omitting it from the JSONL rollout prevents: "The encrypted content ... could not be verified."
                         continue
                     p["content"] = None
                 elif ptype == "message":

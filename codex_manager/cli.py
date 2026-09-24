@@ -34,6 +34,7 @@ Main commands:
     rollback [id]                  Undo a cloned session from latest backup snapshot
     split <name|id> [turns]        Split session to keep recent turns (default: 500) and archive older history
     fix-reasoning                  Ensure Codex Desktop & models.json always have low, high, max
+    sync-goals                     Synchronize active thread goals across paired sessions
 
 Global options:
     --codex-home <path>            Specify custom .codex home directory (auto-detected by default)
@@ -280,7 +281,9 @@ def main():
                 print("[-] Failed to disable auto-start on Windows boot.")
                 return 1
         else:
-            print(f"Unknown proxy action '{action}'. Options: status, start, stop, restart, enable-autostart, disable-autostart")
+            print(
+                f"Unknown proxy action '{action}'. Options: status, start, stop, restart, enable-autostart, disable-autostart"
+            )
             return 1
     elif cmd == "reconcile":
         from .proxy.reconciler import reconcile_delegation_turns
@@ -334,6 +337,15 @@ def main():
         from .reasoning import ensure_reasoning_efforts
 
         ensure_reasoning_efforts(codex_home, verbose=True)
+    elif cmd in ("sync-goals", "goals"):
+        from .goals import sync_goals
+
+        ok, msg, count = sync_goals(codex_home)
+        if ok:
+            print(f"[+] {msg}")
+        else:
+            print(f"[-] {msg}")
+            return 1
     else:
         print(f"Unknown command: '{cmd}'")
         print_help()

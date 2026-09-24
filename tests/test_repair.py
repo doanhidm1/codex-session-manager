@@ -235,13 +235,15 @@ class TestIndexSync(unittest.TestCase):
                     updated_at_ordinal INTEGER
                 )
             """)
-            broken_json = json.dumps({
-                "type": "commandExecution",
-                "id": "item-broken",
-                "source": "unified_exec_startup",
-                "cwd": "file:///C:/path",
-                "stdout": "raw",
-            })
+            broken_json = json.dumps(
+                {
+                    "type": "commandExecution",
+                    "id": "item-broken",
+                    "source": "unified_exec_startup",
+                    "cwd": "file:///C:/path",
+                    "stdout": "raw",
+                }
+            )
             cur.execute(
                 "INSERT INTO thread_items (thread_id, turn_id, item_id, item_json, item_type) VALUES (?, 't1', 'item-broken', ?, 'commandExecution')",
                 (tid, broken_json),
@@ -262,4 +264,3 @@ class TestIndexSync(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

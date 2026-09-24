@@ -153,6 +153,13 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
 
     heal_thread_items_sources(paths.th_db)
 
+    # 1.3 Sync goals across registered pairs
+    from .goals import sync_goals
+
+    ok_g, msg_g, _ = sync_goals(codex_home)
+    if ok_g:
+        print(f"[*] Thread goals synchronized: {msg_g}")
+
     # 1.5. Auto-split active pairs if configured threshold in config.toml is exceeded
     from .split import check_and_auto_split
 

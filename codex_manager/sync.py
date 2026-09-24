@@ -228,6 +228,10 @@ def sync_threads(src_arg, tgt_arg, codex_home, force=False):
         paths, tgt_id, appended_turns_meta, appended_items_meta, curr_offset, curr_ord, now_ts, now_ms
     )
 
+    from .goals import sync_goals
+
+    sync_goals(codex_home, specific_pair=(src_id, tgt_id))
+
     print(
         f"[SUCCESS] Successfully appended {len(appended_turns_meta)} new turn(s) with full fidelity from [{src_name or src_id[:8]}] to [{tgt_name or tgt_id[:8]}]!"
     )
@@ -277,6 +281,10 @@ def sync_all_pairs(codex_home, target_provider=None, force=False):
         sync_threads(o_id, d_id, codex_home, force=force)
         sync_threads(d_id, o_id, codex_home, force=force)
         update_last_synced(paths.mapping_db, pair_id)
+
+    from .goals import sync_goals
+
+    sync_goals(codex_home)
 
     print("\n[+] Bidirectional sync completed successfully for all session pairs!")
     return True

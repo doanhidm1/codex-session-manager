@@ -63,59 +63,76 @@ def reconcile_delegation_turns(db_path: Optional[str] = None, thread_id: Optiona
 
             updated_count = 0
             for tid, turn_id in candidates:
-                # Find the first item of this turn
+                # 1. First check if an item with type 'userMessage' already exists for this turn
                 cur.execute(
                     """
                     SELECT item_id
                     FROM thread_items
-                    WHERE thread_id = ? AND turn_id = ?
+                    WHERE thread_id = ? AND turn_id = ? AND item_type = 'userMessage'
                     ORDER BY rollout_ordinal ASC
                     LIMIT 1
                     """,
                     (tid, turn_id),
                 )
-                first_row = cur.fetchone()
-                if not first_row:
-                    continue
-
-                first_item_id = first_row[0]
-
-                # Ensure the turn starter item in thread_items has type 'userMessage'
-                # so Codex Desktop's read_thread can deserialize and render it
-                cur.execute(
-                    "SELECT item_type, item_json FROM thread_items WHERE thread_id = ? AND item_id = ?",
-                    (tid, first_item_id),
-                )
-                it_row = cur.fetchone()
-                if it_row and it_row[0] != "userMessage":
-                    clean_text = ""
-                    try:
-                        d = json.loads(it_row[1])
-                        if "output" in d:
-                            clean_text = d["output"]
-                        elif "content" in d:
-                            c = d["content"]
-                            if isinstance(c, list):
-                                clean_text = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in c)
-                            else:
-                                clean_text = str(c)
-                    except Exception:
-                        clean_text = "[Delegation message]"
-                    if not clean_text:
-                        clean_text = "[Delegation message]"
-                    new_json = json.dumps(
-                        {
-                            "type": "userMessage",
-                            "id": first_item_id,
-                            "content": [{"type": "text", "text": clean_text}],
-                            "clientId": None,
-                        },
-                        ensure_ascii=False,
-                    )
+                user_msg_row = cur.fetchone()
+                if user_msg_row:
+                    first_item_id = user_msg_row[0]
+                else:
+                    # Find the first item of this turn
                     cur.execute(
-                        "UPDATE thread_items SET item_type = 'userMessage', item_json = ? WHERE thread_id = ? AND item_id = ?",
-                        (new_json, tid, first_item_id),
+                        """
+                        SELECT item_id
+                        FROM thread_items
+                        WHERE thread_id = ? AND turn_id = ?
+                        ORDER BY rollout_ordinal ASC
+                        LIMIT 1
+                        """,
+                        (tid, turn_id),
                     )
+                    first_row = cur.fetchone()
+                    if not first_row:
+                        continue
+
+                    first_item_id = first_row[0]
+
+                    # Ensure the turn starter item in thread_items has type 'userMessage'
+                    # so Codex Desktop's read_thread can deserialize and render it
+                    cur.execute(
+                        "SELECT item_type, item_json FROM thread_items WHERE thread_id = ? AND item_id = ?",
+                        (tid, first_item_id),
+                    )
+                    it_row = cur.fetchone()
+                    if it_row and it_row[0] != "userMessage":
+                        clean_text = ""
+                        try:
+                            d = json.loads(it_row[1])
+                            if "output" in d:
+                                clean_text = d["output"]
+                            elif "content" in d:
+                                c = d["content"]
+                                if isinstance(c, list):
+                                    clean_text = "".join(
+                                        p.get("text", "") if isinstance(p, dict) else str(p) for p in c
+                                    )
+                                else:
+                                    clean_text = str(c)
+                        except Exception:
+                            clean_text = "[Delegation message]"
+                        if not clean_text:
+                            clean_text = "[Delegation message]"
+                        new_json = json.dumps(
+                            {
+                                "type": "userMessage",
+                                "id": first_item_id,
+                                "content": [{"type": "text", "text": clean_text}],
+                                "clientId": None,
+                            },
+                            ensure_ascii=False,
+                        )
+                        cur.execute(
+                            "UPDATE thread_items SET item_type = 'userMessage', item_json = ? WHERE thread_id = ? AND item_id = ?",
+                            (new_json, tid, first_item_id),
+                        )
 
                 # Also find the final agent message of this turn if missing
                 cur.execute(

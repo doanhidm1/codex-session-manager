@@ -49,7 +49,10 @@ A zero-dependency, cross-platform CLI tool and Python library for managing, migr
 12. **Long-Session Archival & Splitter Engine (`split`):**
     - Splits massive sessions (e.g. >500 turns) into an archived historical thread and an active recent thread.
     - Eliminates UI lag and high memory consumption while maintaining flawless continuity.
-13. **Zero External Dependencies & Cross-Platform:**
+13. **Active Thread Goal Synchronization (`goals_1.sqlite` & `sync-goals`):**
+    - Synchronizes thread goal status (`active`, `paused`, `blocked`/`stalled`, `complete`), objective descriptions, tokens used, and elapsed time between paired sessions.
+    - Guarantees the Codex Desktop Goal status bar (`@ Goal stalled ...`) and active task continuation seamlessly persist when switching between OpenAI and DeepSeek.
+14. **Zero External Dependencies & Cross-Platform:**
     - Built using standard library Python utilities with clean modular architecture.
     - Seamlessly works across Windows (`%USERPROFILE%\.codex`), macOS (`~/.codex`), and Linux (`~/.codex`).
 
@@ -75,6 +78,7 @@ codex-session-manager/
 │   ├── deepseek_proxy.py      # Legacy entrypoint wrapping proxy module
 │   ├── discovery.py           # Auto-discovery of unmapped threads & name tagging
 │   ├── extractor.py           # Turn extraction & payload parsing from rollout files
+│   ├── goals.py               # Active thread goals synchronization (goals_1.sqlite)
 │   ├── mapping.py             # Dedicated mapping database (session_manager.sqlite)
 │   ├── migration.py           # Session clone orchestration and metadata preservation
 │   ├── pair_health.py         # Target health verification & deleted/corrupt target recovery
@@ -109,6 +113,7 @@ codex-session-manager/
 │   ├── switch-deepseek.sh     # macOS/Linux: 1-click sync & switch to DeepSeek
 │   └── switch-openai.sh       # macOS/Linux: 1-click sync & switch to OpenAI
 └── tests/
+    ├── test_goals.py          # Thread goals synchronization and conflict resolution tests
     ├── test_proxy.py          # Proxy adapter, daemon, and reconciler test suite
     ├── test_reasoning.py      # Reasoning effort verification and UI repair tests
     ├── test_repair.py         # Rollout repair and JSONL auditor tests
