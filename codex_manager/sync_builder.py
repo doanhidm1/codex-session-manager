@@ -5,6 +5,7 @@ import sqlite3
 import time
 import uuid
 
+from .projection import normalize_command_execution
 from .rollout import make_wire_record
 
 
@@ -201,6 +202,10 @@ def stream_turn_wire_records(
                 # Use pristine source item_json if available, unless it was converted for DeepSeek XML
                 if not is_converted_xml and source_items_map and iid in source_items_map:
                     src_itype, src_ijson = source_items_map[iid]
+                    if src_itype == "commandExecution" and "unified_exec_" in src_ijson:
+                        src_ijson = src_ijson.replace('"unified_exec_startup"', '"unifiedExecStartup"').replace(
+                            '"unified_exec_interaction"', '"unifiedExecInteraction"'
+                        ).replace('"user_shell"', '"userShell"')
                     final_item_json = src_ijson
                     final_item_type = src_itype
                 else:
@@ -236,35 +241,8 @@ def stream_turn_wire_records(
                                     clean_c.append(elem)
                             clean_item["content"] = clean_c
                     elif clean_itype == "commandExecution":
-                        raw_cmd = clean_item.get("command")
-                        if isinstance(raw_cmd, list):
-                            import subprocess
-
-                            clean_item["command"] = subprocess.list2cmdline(raw_cmd)
-                        if "process_id" in clean_item and "processId" not in clean_item:
-                            clean_item["processId"] = str(clean_item.pop("process_id", None) or "")
-                        if "aggregated_output" in clean_item and "aggregatedOutput" not in clean_item:
-                            clean_item["aggregatedOutput"] = clean_item.pop("aggregated_output", None)
-                        if "exit_code" in clean_item and "exitCode" not in clean_item:
-                            clean_item["exitCode"] = clean_item.pop("exit_code", None)
-                        dur_raw = clean_item.pop("duration", None) or clean_item.get("durationMs")
-                        if isinstance(dur_raw, dict):
-                            clean_item["durationMs"] = int(
-                                dur_raw.get("secs", 0) * 1000 + dur_raw.get("nanos", 0) // 1_000_000
-                            )
-                        elif isinstance(dur_raw, (int, float)):
-                            clean_item["durationMs"] = int(dur_raw)
-
-                        p_cmd = clean_item.pop("parsed_cmd", None) or clean_item.get("commandActions") or []
-                        actions = []
-                        if isinstance(p_cmd, list):
-                            for act in p_cmd:
-                                if isinstance(act, dict):
-                                    act_cmd = act.get("command") or act.get("cmd") or ""
-                                    actions.append({"type": "unknown", "command": act_cmd})
-                        clean_item["commandActions"] = (
-                            actions if actions else [{"type": "unknown", "command": clean_item.get("command", "")}]
-                        )
+                        clean_item = normalize_command_execution(clean_item)
+                        clean_item["id"] = iid
                     final_item_json = json.dumps(clean_item, ensure_ascii=False)
                     final_item_type = clean_itype
 

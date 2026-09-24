@@ -324,6 +324,12 @@ def main():
             )
         else:
             print(f"[-] Offset sync failed: {sync_res.get('error')}")
+
+        from .repair import heal_thread_items_sources
+
+        healed_count = heal_thread_items_sources(paths.th_db)
+        if healed_count > 0:
+            print(f"[+] Healed {healed_count} invalid command item(s) in SQLite thread_items.")
     elif cmd in ("fix-reasoning", "reasoning"):
         from .reasoning import ensure_reasoning_efforts
 

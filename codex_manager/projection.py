@@ -6,6 +6,87 @@ import time
 from .config import normalize_path
 
 
+def normalize_command_execution(raw_item: dict) -> dict:
+    """
+    Ensures commandExecution dictionary conforms strictly to Codex Rust Serde schema:
+    - command: string
+    - processId: string
+    - aggregatedOutput: string
+    - exitCode: integer
+    - durationMs: integer
+    - commandActions: list of dicts
+    - source: one of ('agent', 'userShell', 'unifiedExecStartup', 'unifiedExecInteraction')
+    - cwd: normalized local path without 'file:///' prefix
+    - strips non-schema keys (stdout, stderr, formatted_output, etc.)
+    """
+    item = dict(raw_item)
+    raw_cmd = item.get("command")
+    if isinstance(raw_cmd, list):
+        import subprocess
+
+        cmd_str = subprocess.list2cmdline(raw_cmd)
+    elif isinstance(raw_cmd, str):
+        cmd_str = raw_cmd
+    else:
+        cmd_str = str(raw_cmd or "")
+
+    dur_raw = item.get("duration") or item.get("durationMs")
+    dur_ms = None
+    if isinstance(dur_raw, dict):
+        dur_ms = int(dur_raw.get("secs", 0) * 1000 + dur_raw.get("nanos", 0) // 1_000_000)
+    elif isinstance(dur_raw, (int, float)):
+        dur_ms = int(dur_raw)
+
+    p_cmd = item.get("parsed_cmd") or item.get("commandActions") or []
+    actions = []
+    if isinstance(p_cmd, list):
+        for act in p_cmd:
+            if isinstance(act, dict):
+                act_cmd = act.get("command") or act.get("cmd") or ""
+                actions.append({"type": "unknown", "command": act_cmd})
+
+    cwd = item.get("cwd") or ""
+    if isinstance(cwd, str) and cwd.startswith("file:///"):
+        cwd = cwd[8:]
+    cwd = os.path.normpath(cwd) if cwd else None
+
+    src_raw = item.get("source") or "unifiedExecStartup"
+    if src_raw == "unified_exec_startup":
+        src_raw = "unifiedExecStartup"
+    elif src_raw == "unified_exec_interaction":
+        src_raw = "unifiedExecInteraction"
+    elif src_raw == "user_shell":
+        src_raw = "userShell"
+    elif src_raw not in ("agent", "userShell", "unifiedExecStartup", "unifiedExecInteraction"):
+        src_raw = "unifiedExecStartup"
+
+    agg_out = (
+        item.get("aggregated_output")
+        or item.get("aggregatedOutput")
+        or item.get("stdout")
+        or ""
+    )
+
+    exit_code = item.get("exit_code") if "exit_code" in item else item.get("exitCode", 0)
+
+    clean_item = {
+        "type": "commandExecution",
+        "id": item.get("id"),
+        "pluginId": item.get("pluginId", None),
+        "scriptPath": item.get("scriptPath", None),
+        "command": cmd_str,
+        "cwd": cwd,
+        "processId": str(item.get("process_id") or item.get("processId") or ""),
+        "source": src_raw,
+        "status": item.get("status", "completed"),
+        "commandActions": actions if actions else [{"type": "unknown", "command": cmd_str}],
+        "aggregatedOutput": agg_out,
+        "exitCode": exit_code,
+        "durationMs": dur_ms,
+    }
+    return clean_item
+
+
 def build_thread_projection(rollout_path, thread_id, th_db):
     """
     Scan a JSONL rollout file and populate the projection cache in thread_history_1.sqlite:
@@ -134,60 +215,8 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                             p_turns[tid]["final_agent_item_id"] = iid
                     elif itype_raw in ("CommandExecution", "commandExecution"):
                         itype = "commandExecution"
-                        raw_cmd = raw_item.get("command")
-                        if isinstance(raw_cmd, list):
-                            import subprocess
-
-                            cmd_str = subprocess.list2cmdline(raw_cmd)
-                        elif isinstance(raw_cmd, str):
-                            cmd_str = raw_cmd
-                        else:
-                            cmd_str = str(raw_cmd or "")
-
-                        dur_raw = raw_item.get("duration") or raw_item.get("durationMs")
-                        dur_ms = None
-                        if isinstance(dur_raw, dict):
-                            dur_ms = int(dur_raw.get("secs", 0) * 1000 + dur_raw.get("nanos", 0) // 1_000_000)
-                        elif isinstance(dur_raw, (int, float)):
-                            dur_ms = int(dur_raw)
-
-                        p_cmd = raw_item.get("parsed_cmd") or raw_item.get("commandActions") or []
-                        actions = []
-                        if isinstance(p_cmd, list):
-                            for act in p_cmd:
-                                if isinstance(act, dict):
-                                    act_cmd = act.get("command") or act.get("cmd") or ""
-                                    actions.append({"type": "unknown", "command": act_cmd})
-
-                        cwd = raw_item.get("cwd") or ""
-                        if isinstance(cwd, str) and cwd.startswith("file:///"):
-                            cwd = cwd[8:]
-                        cwd = os.path.normpath(cwd) if cwd else None
-
-                        source = raw_item.get("source") or "unifiedExecStartup"
-                        if source == "unified_exec_startup":
-                            source = "unifiedExecStartup"
-
-                        clean_item = {
-                            "type": "commandExecution",
-                            "id": iid,
-                            "pluginId": raw_item.get("pluginId", None),
-                            "scriptPath": raw_item.get("scriptPath", None),
-                            "command": cmd_str,
-                            "cwd": cwd,
-                            "processId": str(raw_item.get("process_id") or raw_item.get("processId") or ""),
-                            "source": source,
-                            "status": raw_item.get("status", "completed"),
-                            "commandActions": actions if actions else [{"type": "unknown", "command": cmd_str}],
-                            "aggregatedOutput": raw_item.get("aggregated_output")
-                            or raw_item.get("aggregatedOutput")
-                            or raw_item.get("stdout")
-                            or "",
-                            "exitCode": raw_item.get("exit_code")
-                            if "exit_code" in raw_item
-                            else raw_item.get("exitCode", 0),
-                            "durationMs": dur_ms,
-                        }
+                        clean_item = normalize_command_execution(raw_item)
+                        clean_item["id"] = iid
                     elif itype_raw in ("FileChange", "fileChange"):
                         itype = "fileChange"
                         changes_raw = raw_item.get("changes")

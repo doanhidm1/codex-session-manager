@@ -7,6 +7,7 @@ import time
 
 from .config import CodexPaths, normalize_path
 from .db import resolve_thread
+from .projection import normalize_command_execution
 
 
 def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
@@ -326,37 +327,8 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                                             clean_c.append(elem)
                                     clean_item["content"] = clean_c
                             elif clean_itype == "commandExecution":
-                                raw_cmd = clean_item.get("command")
-                                if isinstance(raw_cmd, list):
-                                    import subprocess
-
-                                    clean_item["command"] = subprocess.list2cmdline(raw_cmd)
-                                if "process_id" in clean_item and "processId" not in clean_item:
-                                    clean_item["processId"] = str(clean_item.pop("process_id", None) or "")
-                                if "aggregated_output" in clean_item and "aggregatedOutput" not in clean_item:
-                                    clean_item["aggregatedOutput"] = clean_item.pop("aggregated_output", None)
-                                if "exit_code" in clean_item and "exitCode" not in clean_item:
-                                    clean_item["exitCode"] = clean_item.pop("exit_code", None)
-                                dur_raw = clean_item.pop("duration", None) or clean_item.get("durationMs")
-                                if isinstance(dur_raw, dict):
-                                    clean_item["durationMs"] = int(
-                                        dur_raw.get("secs", 0) * 1000 + dur_raw.get("nanos", 0) // 1_000_000
-                                    )
-                                elif isinstance(dur_raw, (int, float)):
-                                    clean_item["durationMs"] = int(dur_raw)
-
-                                p_cmd = clean_item.pop("parsed_cmd", None) or clean_item.get("commandActions") or []
-                                actions = []
-                                if isinstance(p_cmd, list):
-                                    for act in p_cmd:
-                                        if isinstance(act, dict):
-                                            act_cmd = act.get("command") or act.get("cmd") or ""
-                                            actions.append({"type": "unknown", "command": act_cmd})
-                                clean_item["commandActions"] = (
-                                    actions
-                                    if actions
-                                    else [{"type": "unknown", "command": clean_item.get("command", "")}]
-                                )
+                                clean_item = normalize_command_execution(clean_item)
+                                clean_item["id"] = iid
                             final_item_json = translate_thread_ids(json.dumps(clean_item, ensure_ascii=False))
                             final_item_type = clean_itype
 

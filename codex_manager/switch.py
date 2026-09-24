@@ -149,6 +149,10 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
                 sync_threads(d_id, o_id, codex_home, force=force)
             update_last_synced(paths.mapping_db, pair_id)
 
+    from .repair import heal_thread_items_sources
+
+    heal_thread_items_sources(paths.th_db)
+
     # 1.5. Auto-split active pairs if configured threshold in config.toml is exceeded
     from .split import check_and_auto_split
 

@@ -154,3 +154,71 @@ def sync_session_offsets(
     except Exception as e:
         logger.error("Failed to sync offsets in SQLite: %s", e)
         return {"success": False, "error": str(e)}
+
+
+def heal_thread_items_sources(db_path: Optional[str] = None) -> int:
+    """
+    Scans thread_items in thread_history_1.sqlite and ensures that all commandExecution
+    items have valid camelCase source values ('unifiedExecStartup', 'unifiedExecInteraction',
+    'userShell', 'agent') and normalized paths, preventing Codex Rust serde deserialization errors.
+    Returns the count of healed items.
+    """
+    if not db_path:
+        codex_home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+        db_path = os.path.join(codex_home, "thread_history_1.sqlite")
+
+    if not os.path.exists(db_path):
+        return 0
+
+    healed = 0
+    try:
+        conn = sqlite3.connect(db_path, timeout=10.0)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT rowid, item_id, item_json FROM thread_items WHERE item_json LIKE '%unified_exec%' OR item_json LIKE '%file:///%'"
+        )
+        rows = cur.fetchall()
+
+        for rid, _iid, ijson in rows:
+            try:
+                data = json.loads(ijson)
+                modified = False
+                src = data.get("source")
+                if src == "unified_exec_startup":
+                    data["source"] = "unifiedExecStartup"
+                    modified = True
+                elif src == "unified_exec_interaction":
+                    data["source"] = "unifiedExecInteraction"
+                    modified = True
+                elif src == "user_shell":
+                    data["source"] = "userShell"
+                    modified = True
+                elif src and src not in ("agent", "userShell", "unifiedExecStartup", "unifiedExecInteraction"):
+                    data["source"] = "unifiedExecStartup"
+                    modified = True
+
+                cwd = data.get("cwd")
+                if isinstance(cwd, str) and cwd.startswith("file:///"):
+                    data["cwd"] = os.path.normpath(cwd[8:])
+                    modified = True
+
+                for k in ("stdout", "stderr", "formatted_output"):
+                    if k in data:
+                        data.pop(k, None)
+                        modified = True
+
+                if modified:
+                    new_json = json.dumps(data, ensure_ascii=False)
+                    cur.execute("UPDATE thread_items SET item_json = ? WHERE rowid = ?", (new_json, rid))
+                    healed += 1
+            except Exception:
+                pass
+
+        if healed > 0:
+            conn.commit()
+            logger.info("Healed %d invalid commandExecution item(s) in %s", healed, db_path)
+        conn.close()
+    except Exception as e:
+        logger.warning("Failed to heal thread_items in %s: %s", db_path, e)
+
+    return healed
