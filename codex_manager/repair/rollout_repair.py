@@ -7,11 +7,27 @@ and syntax corruptions in Codex rollout .jsonl files.
 import json
 import logging
 import os
+import re
 import shutil
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("codex_manager.repair.rollout")
+
+TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def sanitize_tool_name(name: Optional[str]) -> str:
+    """
+    Sanitizes tool/function call names to conform to OpenAI/DeepSeek API constraints:
+    Expected pattern: ^[a-zA-Z0-9_-]+$
+    Replaces any invalid characters (e.g. colons '::', spaces, dots) with underscores '_'.
+    """
+    if not name:
+        return "unnamed_tool"
+    s = name.replace("::", "__")
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", s)
+    return cleaned or "unnamed_tool"
 
 
 def audit_rollout_file(file_path: str) -> Dict[str, Any]:
@@ -48,7 +64,7 @@ def audit_rollout_file(file_path: str) -> Dict[str, Any]:
                 continue
 
             try:
-                json.loads(stripped)
+                data = json.loads(stripped)
             except json.JSONDecodeError as je:
                 broken_lines.append(
                     {
@@ -58,6 +74,37 @@ def audit_rollout_file(file_path: str) -> Dict[str, Any]:
                         "text_sample": stripped[:120],
                     }
                 )
+                continue
+
+            # Check 3: Tool name validity (OpenAI schema requirement: ^[a-zA-Z0-9_-]+$)
+            if isinstance(data, dict) and data.get("type") == "response_item":
+                payload = data.get("payload")
+                if isinstance(payload, dict):
+                    ptype = payload.get("type")
+                    if ptype in ("function_call", "custom_tool_call"):
+                        pname = payload.get("name")
+                        if pname and not TOOL_NAME_PATTERN.match(pname):
+                            broken_lines.append(
+                                {
+                                    "line_index": idx,
+                                    "error_type": "InvalidToolName",
+                                    "details": f"Tool name {pname!r} does not match ^[a-zA-Z0-9_-]+$",
+                                    "text_sample": stripped[:120],
+                                    "invalid_name": pname,
+                                }
+                            )
+                    elif ptype in ("function_call_output", "custom_tool_call_output"):
+                        pname = payload.get("name")
+                        if pname and not TOOL_NAME_PATTERN.match(pname):
+                            broken_lines.append(
+                                {
+                                    "line_index": idx,
+                                    "error_type": "InvalidToolName",
+                                    "details": f"Tool output name {pname!r} does not match ^[a-zA-Z0-9_-]+$",
+                                    "text_sample": stripped[:120],
+                                    "invalid_name": pname,
+                                }
+                            )
 
     return {
         "exists": True,
@@ -100,6 +147,32 @@ def repair_rollout_file(file_path: str, backup: bool = True) -> Tuple[bool, str,
         if idx not in broken_indices:
             repaired_lines.append(raw_line)
             continue
+
+        # Check if line has InvalidToolName
+        invalid_tool_entry = next(
+            (b for b in audit["broken_lines"] if b["line_index"] == idx and b.get("error_type") == "InvalidToolName"),
+            None,
+        )
+        if invalid_tool_entry:
+            text = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            try:
+                data = json.loads(text)
+                payload = data.get("payload", {})
+                if isinstance(payload, dict):
+                    if "name" in payload and payload["name"]:
+                        payload["name"] = sanitize_tool_name(payload["name"])
+                    meta = payload.get("internal_chat_message_metadata_passthrough")
+                    if isinstance(meta, dict) and "executed_tool_calls" in meta:
+                        for etc in meta["executed_tool_calls"]:
+                            if isinstance(etc, dict) and "name" in etc:
+                                etc["name"] = sanitize_tool_name(etc["name"])
+                fixed_text = json.dumps(data, ensure_ascii=False)
+                repaired_lines.append((fixed_text + "\r\n").encode("utf-8"))
+                fixed_indices.append(idx)
+                logger.info("Sanitized tool name at line %d.", idx)
+                continue
+            except Exception as e:
+                logger.warning("Failed to sanitize tool name at line %d: %s", idx, e)
 
         # Attempt safe repair of truncated line
         # 1. Decode with ignore or replace to inspect

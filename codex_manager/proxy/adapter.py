@@ -196,6 +196,10 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
                 item["namespace"] = "mcp__codex_app"
                 adapted = True
             fname = str(item.get("name", ""))
+            if "::" in fname:
+                item["name"] = fname.replace("::", "__")
+                fname = item["name"]
+                adapted = True
             if fname.startswith("mcp__codex_app__"):
                 item["name"] = fname[len("mcp__codex_app__") :]
                 item["namespace"] = "mcp__codex_app"
@@ -206,6 +210,10 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
                 item["namespace"] = "mcp__codex_app"
                 adapted = True
             fname = str(item.get("name", ""))
+            if "::" in fname:
+                item["name"] = fname.replace("::", "__")
+                fname = item["name"]
+                adapted = True
             if fname.startswith("mcp__codex_app__"):
                 item["name"] = fname[len("mcp__codex_app__") :]
                 item["namespace"] = "mcp__codex_app"

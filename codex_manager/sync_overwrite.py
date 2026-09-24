@@ -8,6 +8,7 @@ import time
 from .config import CodexPaths, normalize_path
 from .db import resolve_thread
 from .projection import normalize_command_execution
+from .repair import sanitize_tool_name
 
 
 def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
@@ -363,6 +364,15 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
 
                 elif rtype == "response_item":
                     ptype = p.get("type")
+                    if ptype in ("function_call", "custom_tool_call"):
+                        pname = p.get("name")
+                        if pname:
+                            p["name"] = sanitize_tool_name(pname)
+                    elif ptype in ("function_call_output", "custom_tool_call_output"):
+                        pname = p.get("name")
+                        if pname:
+                            p["name"] = sanitize_tool_name(pname)
+
                     if ptype == "function_call_output":
                         pname = p.get("name")
                         out_str = p.get("output", "")

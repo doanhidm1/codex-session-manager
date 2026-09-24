@@ -6,6 +6,7 @@ import time
 import uuid
 
 from .projection import normalize_command_execution
+from .repair import sanitize_tool_name
 from .rollout import make_wire_record
 
 
@@ -309,7 +310,16 @@ def stream_turn_wire_records(
                             "updated_at_ordinal": rec_ord,
                         }
                     )
-            elif tgt_prov == "openai":
+            if ptype in ("function_call", "custom_tool_call"):
+                pname = p.get("name")
+                if pname:
+                    p["name"] = sanitize_tool_name(pname)
+            elif ptype in ("function_call_output", "custom_tool_call_output"):
+                pname = p.get("name")
+                if pname:
+                    p["name"] = sanitize_tool_name(pname)
+
+            if tgt_prov == "openai":
                 if ptype == "reasoning":
                     enc = p.get("encrypted_content") or ""
                     if not enc.startswith("gAAAAAB"):

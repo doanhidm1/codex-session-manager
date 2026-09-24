@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from codex_manager.projection import normalize_command_execution
 from codex_manager.repair.index_sync import heal_thread_items_sources, sync_session_offsets
-from codex_manager.repair.rollout_repair import audit_rollout_file, repair_rollout_file
+from codex_manager.repair.rollout_repair import audit_rollout_file, repair_rollout_file, sanitize_tool_name
 
 
 class TestRolloutRepair(unittest.TestCase):
@@ -90,6 +90,54 @@ class TestRolloutRepair(unittest.TestCase):
         post_audit = audit_rollout_file(fpath)
         self.assertTrue(post_audit["valid"])
         self.assertEqual(len(post_audit["broken_lines"]), 0)
+
+    def test_sanitize_tool_name(self):
+        self.assertEqual(sanitize_tool_name("mcp__chrome_devtools::click"), "mcp__chrome_devtools__click")
+        self.assertEqual(sanitize_tool_name("mcp__app::send_message_to_thread"), "mcp__app__send_message_to_thread")
+        self.assertEqual(sanitize_tool_name("valid_name_123"), "valid_name_123")
+        self.assertEqual(sanitize_tool_name("invalid name.with:dots!"), "invalid_name_with_dots_")
+        self.assertEqual(sanitize_tool_name(""), "unnamed_tool")
+        self.assertEqual(sanitize_tool_name(None), "unnamed_tool")
+
+    def test_audit_and_repair_invalid_tool_names(self):
+        fpath = os.path.join(self.temp_dir.name, "invalid_tools.jsonl")
+        records = [
+            {"type": "session_meta", "payload": {"id": "test"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "id": "c1",
+                    "name": "mcp__chrome_devtools::click",
+                    "arguments": "{}",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "id": "o1",
+                    "name": "mcp__chrome_devtools::click",
+                    "output": "ok",
+                },
+            },
+        ]
+        with open(fpath, "wb") as f:
+            for r in records:
+                f.write(json.dumps(r).encode("utf-8") + b"\n")
+
+        audit = audit_rollout_file(fpath)
+        self.assertFalse(audit["valid"])
+        self.assertEqual(audit["broken_count"], 2)
+        self.assertEqual(audit["broken_lines"][0]["error_type"], "InvalidToolName")
+
+        ok, msg, fixed = repair_rollout_file(fpath, backup=False)
+        self.assertTrue(ok, msg)
+        self.assertEqual(len(fixed), 2)
+
+        post_audit = audit_rollout_file(fpath)
+        self.assertTrue(post_audit["valid"])
+        self.assertEqual(post_audit["broken_count"], 0)
 
 
 class TestIndexSync(unittest.TestCase):
