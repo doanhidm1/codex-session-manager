@@ -121,16 +121,9 @@ def extract_turns_from_sqlite(th_db, source_thread_id, codex_home):
                         td["user_messages"].append("[Automated status check]\n" + "\n\n".join(td["automations"]))
 
                 if td["user_messages"] or td["agent_messages"]:
-                    if not td["user_messages"] and turns:
-                        if td["agent_messages"]:
-                            turns[-1]["agent_messages"].extend(td["agent_messages"])
-                            turns[-1]["last_agent_message"] = (
-                                td["last_agent_message"] or turns[-1]["last_agent_message"]
-                            )
-                    else:
-                        if not td["user_messages"]:
-                            td["user_messages"].append("[Workspace session initialized]")
-                        turns.append(td)
+                    if not td["user_messages"]:
+                        td["user_messages"].append("[Goal continuation]")
+                    turns.append(td)
 
         conn.close()
     except Exception:

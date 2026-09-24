@@ -119,10 +119,12 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         out_rollout = os.path.join(out_dir, out_filename)
         clean_cwd = normalize_path(thread_data.get("cwd") or os.path.expanduser("~"))
 
-        # 3. Extract turns
-        turns = extract_turns_from_sqlite(paths.th_db, source_thread_id, paths.codex_home)
-        if not turns:
+        # 3. Extract turns (prefer rollout file for full raw fidelity, fallback to SQLite)
+        turns = []
+        if os.path.exists(source_rollout):
             turns = extract_turns_from_rollout(source_rollout)
+        if not turns:
+            turns = extract_turns_from_sqlite(paths.th_db, source_thread_id, paths.codex_home)
 
         # 4. Build rollout file (inheriting genuine source metadata)
         build_migrated_rollout_file(
