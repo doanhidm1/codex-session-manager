@@ -2,8 +2,36 @@ import json
 import os
 import sqlite3
 import time
+from typing import Optional
 
 from .config import normalize_path
+
+INTERNAL_CONTEXT_TAGS = (
+    "<environment_context",
+    "<codex_internal_context",
+    "<collaboration_mode",
+    "<app-context",
+    "<skills_instructions",
+    "<model_switch",
+    "<recommended_plugins",
+    "<turn_aborted",
+)
+
+
+def is_internal_system_context(text: str, metadata: Optional[dict] = None) -> bool:
+    """
+    Returns True if the message is an internal system/environment context
+    injected by Codex Desktop (e.g. <environment_context>), which should
+    remain in the wire rollout for the LLM but NEVER be projected into
+    thread_items as a user chat bubble.
+    """
+    if metadata and isinstance(metadata, dict):
+        kinds = metadata.get("content_item_kinds")
+        if kinds and isinstance(kinds, list):
+            if any("environment" in str(k).lower() for k in kinds):
+                return True
+    stripped = text.strip()
+    return any(stripped.startswith(tag) for tag in INTERNAL_CONTEXT_TAGS)
 
 
 def normalize_command_execution(raw_item: dict) -> dict:
@@ -310,7 +338,6 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                             p_turns[tid]["error_json"] = json.dumps(e_payload["error"], ensure_ascii=False)
             elif e_type == "response_item":
                 if p_type == "message" and e_payload.get("role") == "user":
-                    iid = e_payload.get("id")
                     raw_c = e_payload.get("content", [])
                     clean_text = ""
                     for part in raw_c:
@@ -318,27 +345,30 @@ def build_thread_projection(rollout_path, thread_id, th_db):
                             clean_text += part["text"]
                         elif isinstance(part, str):
                             clean_text += part
-                    clean_item = {
-                        "type": "userMessage",
-                        "id": iid,
-                        "content": [{"type": "text", "text": clean_text}],
-                        "clientId": None,
-                    }
-                    tid = p_curr_tid
-                    if tid and tid in p_turns and not p_turns[tid]["first_user_item_id"]:
-                        p_turns[tid]["first_user_item_id"] = iid
-                    p_items.append(
-                        {
-                            "thread_id": thread_id,
-                            "turn_id": tid,
-                            "item_id": iid,
-                            "rollout_ordinal": ord_val,
-                            "created_at_ms": now_ms,
-                            "item_json": json.dumps(clean_item, ensure_ascii=False),
-                            "item_type": "userMessage",
-                            "updated_at_ordinal": ord_val,
+                    meta = e_payload.get("internal_chat_message_metadata_passthrough")
+                    if not is_internal_system_context(clean_text, meta):
+                        iid = e_payload.get("id")
+                        clean_item = {
+                            "type": "userMessage",
+                            "id": iid,
+                            "content": [{"type": "text", "text": clean_text}],
+                            "clientId": None,
                         }
-                    )
+                        tid = p_curr_tid
+                        if tid and tid in p_turns and not p_turns[tid]["first_user_item_id"]:
+                            p_turns[tid]["first_user_item_id"] = iid
+                        p_items.append(
+                            {
+                                "thread_id": thread_id,
+                                "turn_id": tid,
+                                "item_id": iid,
+                                "rollout_ordinal": ord_val,
+                                "created_at_ms": now_ms,
+                                "item_json": json.dumps(clean_item, ensure_ascii=False),
+                                "item_type": "userMessage",
+                                "updated_at_ordinal": ord_val,
+                            }
+                        )
 
     th_conn = sqlite3.connect(normalize_path(th_db), timeout=10.0)
     th_cur = th_conn.cursor()

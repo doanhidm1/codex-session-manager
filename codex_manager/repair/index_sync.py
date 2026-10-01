@@ -221,4 +221,92 @@ def heal_thread_items_sources(db_path: Optional[str] = None) -> int:
     except Exception as e:
         logger.warning("Failed to heal thread_items in %s: %s", db_path, e)
 
+    # Also purge any internal XML context items stored as userMessage
+    purged = purge_internal_context_user_messages(db_path)
+    healed += purged
+
     return healed
+
+
+def purge_internal_context_user_messages(db_path: Optional[str] = None) -> int:
+    """
+    Finds and purges internal system/environment context items (e.g. <environment_context>,
+    <collaboration_mode>, <app-context>, <skills_instructions>, <codex_internal_context>)
+    erroneously stored as 'userMessage' in thread_items.
+    Also heals thread_turns.first_user_item_id so it points to the genuine user prompt or NULL.
+    Returns the count of purged items.
+    """
+    from ..projection import is_internal_system_context
+
+    if not db_path:
+        codex_home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+        db_path = os.path.join(codex_home, "thread_history_1.sqlite")
+
+    if not os.path.exists(db_path):
+        return 0
+
+    purged = 0
+    try:
+        conn = sqlite3.connect(db_path, timeout=10.0)
+        cur = conn.cursor()
+
+        # 1. Collect all internal context userMessage rows
+        cur.execute(
+            "SELECT rowid, thread_id, turn_id, item_id, item_json FROM thread_items WHERE item_type = 'userMessage'"
+        )
+        rows = cur.fetchall()
+        to_delete = []
+        for rid, tid, turn_id, item_id, item_json in rows:
+            try:
+                data = json.loads(item_json)
+                text = "".join(c.get("text", "") for c in data.get("content", []) if isinstance(c, dict)).strip()
+                if is_internal_system_context(text):
+                    to_delete.append((rid, tid, turn_id, item_id))
+            except Exception:
+                pass
+
+        if not to_delete:
+            conn.close()
+            return 0
+
+        # 2. Delete the internal context rows from thread_items
+        deleted_item_ids = {x[3] for x in to_delete}
+        deleted_rids = [x[0] for x in to_delete]
+        cur.executemany("DELETE FROM thread_items WHERE rowid = ?", [(r,) for r in deleted_rids])
+        purged = len(to_delete)
+
+        # 3. Heal first_user_item_id in thread_turns if it was pointing to one of these deleted items
+        affected_turns = set((x[1], x[2]) for x in to_delete)
+        for tid, turn_id in affected_turns:
+            cur.execute(
+                "SELECT first_user_item_id FROM thread_turns WHERE thread_id = ? AND turn_id = ?",
+                (tid, turn_id),
+            )
+            t_row = cur.fetchone()
+            if t_row and t_row[0] in deleted_item_ids:
+                # Find the next genuine userMessage for this turn if any
+                cur.execute(
+                    """
+                    SELECT item_id
+                    FROM thread_items
+                    WHERE thread_id = ? AND turn_id = ? AND item_type = 'userMessage'
+                    ORDER BY rollout_ordinal ASC
+                    LIMIT 1
+                    """,
+                    (tid, turn_id),
+                )
+                next_u = cur.fetchone()
+                new_first_id = next_u[0] if next_u else None
+                cur.execute(
+                    "UPDATE thread_turns SET first_user_item_id = ? WHERE thread_id = ? AND turn_id = ?",
+                    (new_first_id, tid, turn_id),
+                )
+
+        conn.commit()
+        conn.close()
+        logger.info("Purged %d internal XML context item(s) from thread_items in %s", purged, db_path)
+    except Exception as e:
+        logger.warning("Failed to purge internal context user messages in %s: %s", db_path, e)
+
+    return purged
+

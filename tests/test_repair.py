@@ -9,8 +9,12 @@ import unittest
 # Ensure parent directory is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from codex_manager.projection import normalize_command_execution
-from codex_manager.repair.index_sync import heal_thread_items_sources, sync_session_offsets
+from codex_manager.projection import is_internal_system_context, normalize_command_execution
+from codex_manager.repair.index_sync import (
+    heal_thread_items_sources,
+    purge_internal_context_user_messages,
+    sync_session_offsets,
+)
 from codex_manager.repair.rollout_repair import audit_rollout_file, repair_rollout_file, sanitize_tool_name
 
 
@@ -309,6 +313,58 @@ class TestIndexSync(unittest.TestCase):
             self.assertEqual(data["cwd"], os.path.normpath("C:/path"))
             self.assertNotIn("stdout", data)
 
+    def test_is_internal_system_context(self):
+        self.assertTrue(is_internal_system_context("<environment_context><current_date>2026-10-01</current_date></environment_context>"))
+        self.assertTrue(is_internal_system_context("<collaboration_mode>plan</collaboration_mode>"))
+        self.assertTrue(is_internal_system_context("<codex_internal_context>data</codex_internal_context>"))
+        self.assertTrue(
+            is_internal_system_context(
+                "custom text",
+                {"content_item_kinds": ["environments.environment_context"]},
+            )
+        )
+        self.assertFalse(is_internal_system_context("Hello world, how are you?"))
+        self.assertFalse(is_internal_system_context("# AGENTS.md instructions\n<instructions>do something</instructions>"))
+
+    def test_purge_internal_context_user_messages(self):
+        tid = "test-purge-thread"
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS thread_items (
+                    thread_id TEXT,
+                    turn_id TEXT,
+                    item_id TEXT PRIMARY KEY,
+                    rollout_ordinal INTEGER,
+                    created_at_ms INTEGER,
+                    item_json TEXT,
+                    item_type TEXT,
+                    updated_at_ordinal INTEGER
+                )
+            """)
+            # Insert a genuine user message and an internal XML user message
+            genuine_json = json.dumps({"type": "userMessage", "id": "msg_real", "content": [{"type": "text", "text": "Real user prompt"}]})
+            xml_json = json.dumps({"type": "userMessage", "id": "msg_xml", "content": [{"type": "text", "text": "<environment_context><current_date>2026</current_date></environment_context>"}]})
+
+            cur.execute("INSERT INTO thread_items (thread_id, turn_id, item_id, item_json, item_type) VALUES (?, 't1', 'msg_xml', ?, 'userMessage')", (tid, xml_json))
+            cur.execute("INSERT INTO thread_items (thread_id, turn_id, item_id, item_json, item_type) VALUES (?, 't1', 'msg_real', ?, 'userMessage')", (tid, genuine_json))
+            cur.execute("INSERT INTO thread_turns (thread_id, turn_id, first_user_item_id) VALUES (?, 't1', 'msg_xml')", (tid,))
+            conn.commit()
+
+        purged = purge_internal_context_user_messages(self.db_path)
+        self.assertEqual(purged, 1)
+
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            remaining_xml = cur.execute("SELECT count(*) FROM thread_items WHERE item_id = 'msg_xml'").fetchone()[0]
+            self.assertEqual(remaining_xml, 0)
+            remaining_real = cur.execute("SELECT count(*) FROM thread_items WHERE item_id = 'msg_real'").fetchone()[0]
+            self.assertEqual(remaining_real, 1)
+            # Verify turn's first_user_item_id was healed to point to the real user message
+            turn_ref = cur.execute("SELECT first_user_item_id FROM thread_turns WHERE turn_id = 't1'").fetchone()[0]
+            self.assertEqual(turn_ref, "msg_real")
+
 
 if __name__ == "__main__":
     unittest.main()
+

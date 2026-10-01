@@ -7,7 +7,7 @@ import time
 
 from .config import CodexPaths, normalize_path
 from .db import resolve_thread
-from .projection import normalize_command_execution
+from .projection import is_internal_system_context, normalize_command_execution
 from .repair import sanitize_tool_name
 
 
@@ -389,9 +389,6 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                             p.pop("output", None)
                             p.pop("namespace", None)
                     elif ptype == "message" and p.get("role") == "user":
-                        iid = p.get("id")
-                        if iid and not curr_turn_first_user:
-                            curr_turn_first_user = iid
                         raw_c = p.get("content", [])
                         clean_text = ""
                         for part in raw_c:
@@ -399,29 +396,34 @@ def overwrite_target_from_source(src_arg, tgt_arg, codex_home, force=False):
                                 clean_text += part["text"]
                             elif isinstance(part, str):
                                 clean_text += part
-                        if "<objective>" in clean_text:
-                            m = re.search(r"<objective>(.*?)</objective>", clean_text, re.DOTALL)
-                            if m:
-                                clean_text = f"[Goal: {m.group(1).strip()}]\n{clean_text}"
-                        clean_item = {
-                            "type": "userMessage",
-                            "id": iid,
-                            "content": [{"type": "text", "text": clean_text}],
-                        }
-                        item_turn_id = curr_tid
-                        if item_turn_id and iid:
-                            items_meta.append(
-                                {
-                                    "thread_id": tgt_id,
-                                    "turn_id": item_turn_id,
-                                    "item_id": iid,
-                                    "rollout_ordinal": rec_ord,
-                                    "created_at_ms": now_ms,
-                                    "item_json": translate_thread_ids(json.dumps(clean_item, ensure_ascii=False)),
-                                    "item_type": "userMessage",
-                                    "updated_at_ordinal": rec_ord,
-                                }
-                            )
+                        meta = p.get("internal_chat_message_metadata_passthrough")
+                        if not is_internal_system_context(clean_text, meta):
+                            iid = p.get("id")
+                            if iid and not curr_turn_first_user:
+                                curr_turn_first_user = iid
+                            if "<objective>" in clean_text:
+                                m = re.search(r"<objective>(.*?)</objective>", clean_text, re.DOTALL)
+                                if m:
+                                    clean_text = f"[Goal: {m.group(1).strip()}]\n{clean_text}"
+                            clean_item = {
+                                "type": "userMessage",
+                                "id": iid,
+                                "content": [{"type": "text", "text": clean_text}],
+                            }
+                            item_turn_id = curr_tid
+                            if item_turn_id and iid:
+                                items_meta.append(
+                                    {
+                                        "thread_id": tgt_id,
+                                        "turn_id": item_turn_id,
+                                        "item_id": iid,
+                                        "rollout_ordinal": rec_ord,
+                                        "created_at_ms": now_ms,
+                                        "item_json": translate_thread_ids(json.dumps(clean_item, ensure_ascii=False)),
+                                        "item_type": "userMessage",
+                                        "updated_at_ordinal": rec_ord,
+                                    }
+                                )
 
                 elif rtype == "token_usage_record":
                     if p.get("thread_id"):

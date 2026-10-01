@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 
-from .projection import normalize_command_execution
+from .projection import is_internal_system_context, normalize_command_execution
 from .repair import sanitize_tool_name
 from .rollout import make_wire_record
 
@@ -278,38 +278,40 @@ def stream_turn_wire_records(
         elif rec_type == "response_item":
             ptype = p.get("type")
             if ptype == "message" and p.get("role") == "user":
-                mid = p.get("id") or ""
-                if tgt_prov == "openai" and mid and not mid.startswith("msg"):
-                    mid = "msg_" + (mid[4:] if mid.startswith("fco_") else mid)
-                    p["id"] = mid
-                if not first_user_item_id:
-                    first_user_item_id = mid
-                if not any(im.get("item_id") == mid for im in item_metas):
-                    raw_c = p.get("content", [])
-                    clean_text = ""
-                    for part in raw_c:
-                        if isinstance(part, dict) and "text" in part:
-                            clean_text += part["text"]
-                        elif isinstance(part, str):
-                            clean_text += part
-                    clean_item = {
-                        "type": "userMessage",
-                        "id": mid,
-                        "content": [{"type": "text", "text": clean_text}],
-                        "clientId": None,
-                    }
-                    item_metas.append(
-                        {
-                            "thread_id": tgt_id,
-                            "turn_id": tid,
-                            "item_id": mid,
-                            "rollout_ordinal": rec_ord,
-                            "created_at_ms": rec_ts_ms,
-                            "item_json": json.dumps(clean_item, ensure_ascii=False),
-                            "item_type": "userMessage",
-                            "updated_at_ordinal": rec_ord,
+                raw_c = p.get("content", [])
+                clean_text = ""
+                for part in raw_c:
+                    if isinstance(part, dict) and "text" in part:
+                        clean_text += part["text"]
+                    elif isinstance(part, str):
+                        clean_text += part
+                meta = p.get("internal_chat_message_metadata_passthrough")
+                if not is_internal_system_context(clean_text, meta):
+                    mid = p.get("id") or ""
+                    if tgt_prov == "openai" and mid and not mid.startswith("msg"):
+                        mid = "msg_" + (mid[4:] if mid.startswith("fco_") else mid)
+                        p["id"] = mid
+                    if not first_user_item_id:
+                        first_user_item_id = mid
+                    if not any(im.get("item_id") == mid for im in item_metas):
+                        clean_item = {
+                            "type": "userMessage",
+                            "id": mid,
+                            "content": [{"type": "text", "text": clean_text}],
+                            "clientId": None,
                         }
-                    )
+                        item_metas.append(
+                            {
+                                "thread_id": tgt_id,
+                                "turn_id": tid,
+                                "item_id": mid,
+                                "rollout_ordinal": rec_ord,
+                                "created_at_ms": rec_ts_ms,
+                                "item_json": json.dumps(clean_item, ensure_ascii=False),
+                                "item_type": "userMessage",
+                                "updated_at_ordinal": rec_ord,
+                            }
+                        )
             if ptype in ("function_call", "custom_tool_call"):
                 pname = p.get("name")
                 if pname:
