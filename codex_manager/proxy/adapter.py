@@ -33,11 +33,14 @@ TOOL_DIRECTIVE = (
     "Any mentions of `exec` or `legacy_exec` in previous conversation turns are from a deprecated environment; do not imitate them.\n"
     "TOKEN EFFICIENCY & COMMAND BATCHING GUIDELINES:\n"
     "- BATCH COMMANDS: Combine related shell inspection or file check commands into a single compound command (e.g. `cmd1; cmd2` or small script) instead of issuing single commands across dozens of separate turns.\n"
-    "- AVOID TIGHT POLLING: Do not query thread status or poll files in rapid repetitive loops. Keep status updates concise and focused."
+    "- AVOID TIGHT POLLING: Do not query thread status or poll files in rapid repetitive loops. Keep status updates concise and focused.\n"
+    "CI/CD & LONG-RUNNING ASYNCHRONOUS TASK MONITORING (CRITICAL):\n"
+    "- NEVER WAIT FOR CI IN A SHELL LOOP: Absolutely do NOT run long-running shell loops (`while true; sleep ...`, repeated curl/glab polling) in cmd/terminal to wait for CI/CD or build jobs. Long-running blocking commands flood context with logs, waste token budget, and trigger fatal SSE idle timeouts (`stream disconnected before completion: idle timeout waiting for SSE`).\n"
+    "- SCHEDULE INSTEAD OF BLOCKING: Inspect CI status ONCE via a quick command. If CI is still in progress (`running`/`pending`), IMMEDIATELY schedule an automation task (`automation_update` with namespace `mcp__codex_app`) or set a timer, report current status, and END THE TURN immediately. Re-check in the subsequent scheduled turn."
 )
 
 
-USER_TOOL_REMINDER = "\n\n[System directive: Execute tasks using direct tools (`exec_command`, `read_thread`, `send_message_to_thread` with namespace `mcp__codex_app` and parameter `prompt`). Always use active (ds) thread IDs. Do NOT call `exec`.]"
+USER_TOOL_REMINDER = "\n\n[System directive: Execute tasks using direct tools (`exec_command`, `read_thread`, `send_message_to_thread` with namespace `mcp__codex_app` and parameter `prompt`). Never run shell loops to wait for CI; check once, schedule automation, and end the turn. Always use active (ds) thread IDs. Do NOT call `exec`.]"
 
 
 def get_mapping_db_path(custom_path: Optional[str] = None) -> str:
