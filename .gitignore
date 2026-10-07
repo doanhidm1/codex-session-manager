@@ -22,3 +22,13 @@ backup-sessions/
 .ruff_cache/
 .pytest_cache/
 
+# Logs & Runtime Sockets
+*.log
+*.sock
+
+# Node / JS
+node_modules/
+
+# IDE & Editors
+.vscode/
+.idea/

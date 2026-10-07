@@ -55,6 +55,10 @@ A zero-dependency, cross-platform CLI tool and Python library for managing, migr
 14. **Zero External Dependencies & Cross-Platform:**
     - Built using standard library Python utilities with clean modular architecture.
     - Seamlessly works across Windows (`%USERPROFILE%\.codex`), macOS (`~/.codex`), and Linux (`~/.codex`).
+15. **Remote-Control Engine & Inter-Session Steering Bridge (`remote.bat` & `codex_session` MCP):**
+    - Launches Codex in headless remote-control mode (`app-server --remote-control`) while binding an active WebSocket RPC interface (`--listen ws://127.0.0.1:45000`).
+    - Provides a dedicated MCP bridge (`scripts/codex-session-bridge.mjs`) registered as `[mcp_servers.codex_session]`, exposing tools for active multi-agent collaboration: `send_message_to_thread`, `steer_thread`, `list_threads`, `read_thread`, `create_thread`, `interrupt_thread`.
+    - **Strict Live Engine:** Operates 100% against live WebSocket turns (`turn/steer`, `turn/start`); never silently drops into passive queueing (`codex queue`) or stale caches, ensuring deterministic, controllable multi-agent orchestration without needing the heavy Electron GUI.
 
 ---
 
@@ -177,6 +181,34 @@ If the block or token is missing, the doctor will display an alert banner with d
 Double-click the batch scripts directly in Windows File Explorer:
 - **`scripts\switch-openai.bat`**: Syncs new DeepSeek turns to OpenAI, restores OpenAI model/reasoning settings, ensures 1M context limits, and shows OpenAI sessions in sidebar.
 - **`scripts\switch-deepseek.bat`**: Syncs new OpenAI turns to DeepSeek, restores DeepSeek model/reasoning settings, ensures 1M context limits, and shows DeepSeek sessions in sidebar.
+- **`scripts\remote.bat`** (or **`remote.bat`**): 1-click startup for Codex Remote Control (`app-server --remote-control`) with active WebSocket Session Bridge on port 45000 (`codex_session` MCP). Automatically registers the MCP in `config.toml`, terminates port conflicts, and enables inter-session steering.
+
+### 🌐 Codex Remote Control & Inter-Session Steering (`codex_session` MCP)
+
+When using Codex in headless remote-control mode without the heavy ChatGPT Desktop Electron app, agents previously lacked the ability to steer or communicate with other sessions. This project includes a dedicated, strict live WebSocket MCP bridge:
+
+#### 1. Starting Remote Server:
+Run either:
+```cmd
+remote.bat
+:: or
+scripts\remote.bat
+```
+This automatically verifies and injects `[mcp_servers.codex_session]` into `~/.codex/config.toml` and launches:
+```cmd
+codex -c features.code_mode_host=true -c analytics.enabled=false app-server --remote-control --listen ws://127.0.0.1:45000
+```
+
+#### 2. Tools Provided to Codex Agents:
+| Tool Name | Parameters | Behavior |
+|---|---|---|
+| `send_message_to_thread` | `threadId`, `message`, `mode="auto"` | Sends instructions to target thread. In `auto` mode, immediately steers in-progress turn (`turn/steer`) or starts a new turn (`turn/start`) if idle. |
+| `steer_thread` | `threadId`, `instructions` | Actively steers and redirects an ongoing turn. Fails fast if the target thread is idle. |
+| `list_threads` | `limit=15`, `query=""` | Lists all live threads from `app-server` with IDs, titles, status (`active`/`idle`), and active turn IDs. |
+| `read_thread` | `threadId` | Reads live conversation history, turns, status, and errors from `app-server`. |
+| `create_thread` | `prompt=""`, `model=null` | Spawns a new thread and triggers its initial turn. |
+| `interrupt_thread` | `threadId`, `turnId=null` | Immediately cancels an ongoing turn. |
+
 
 #### macOS & Linux
 Run the shell scripts directly from your terminal:
