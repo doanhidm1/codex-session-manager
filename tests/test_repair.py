@@ -315,6 +315,7 @@ class TestIndexSync(unittest.TestCase):
 
     def test_is_internal_system_context(self):
         self.assertTrue(is_internal_system_context("<environment_context><current_date>2026-10-01</current_date></environment_context>"))
+        self.assertTrue(is_internal_system_context('<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'))
         self.assertTrue(is_internal_system_context("<collaboration_mode>plan</collaboration_mode>"))
         self.assertTrue(is_internal_system_context("<codex_internal_context>data</codex_internal_context>"))
         self.assertTrue(
