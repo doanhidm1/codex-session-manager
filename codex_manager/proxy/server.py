@@ -17,6 +17,11 @@ import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+try:
+    import tomllib  # Python 3.11+
+except ImportError:  # pragma: no cover
+    tomllib = None
+
 from .adapter import adapt_responses_body, get_active_session_mappings
 from .config import (
     DEEPSEEK_UPSTREAM,
@@ -30,6 +35,41 @@ from .reconciler import reconcile_automations, reconcile_delegation_turns
 logger = logging.getLogger("deepseek_proxy.server")
 
 upstream_client: Optional[httpx.AsyncClient] = None
+
+_key_cache: dict = {"mtime": None, "key": None}
+
+
+def _decode_request_body(body: bytes, encoding: str) -> bytes:
+    """The built-in OpenAI provider (ChatGPT auth) zstd-compresses request bodies; DeepSeek and the adapter need plain JSON."""
+    enc = encoding.lower().strip()
+    if not body or not enc or enc == "identity":
+        return body
+    if enc == "zstd":
+        import zstandard
+
+        return zstandard.ZstdDecompressor().decompressobj().decompress(body)
+    if enc == "gzip":
+        import gzip
+
+        return gzip.decompress(body)
+    logger.warning("Unsupported request content-encoding %r, forwarding body as-is", enc)
+    return body
+
+
+def _deepseek_api_key() -> Optional[str]:
+    """DeepSeek key from config.toml ([model_providers.deepseek]) or DEEPSEEK_API_KEY, cached by file mtime."""
+    cfg = os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "config.toml")
+    try:
+        if tomllib is None:
+            raise RuntimeError("tomllib unavailable (Python < 3.11); set DEEPSEEK_API_KEY instead")
+        mtime = os.path.getmtime(cfg)
+        if _key_cache["mtime"] != mtime:
+            with open(cfg, "rb") as f:
+                prov = tomllib.load(f).get("model_providers", {}).get("deepseek", {})
+            _key_cache.update(mtime=mtime, key=prov.get("experimental_bearer_token") or prov.get("api_key"))
+    except Exception as e:
+        logger.debug("Could not read DeepSeek key from config.toml: %s", e)
+    return _key_cache["key"] or os.environ.get("DEEPSEEK_API_KEY")
 
 
 async def _background_reconciler_loop():
@@ -119,7 +159,7 @@ DELEGATION_STREAM_REPLACEMENTS = [
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"])
 async def proxy_all(request: Request, background_tasks: BackgroundTasks):
     full_path = "/" + request.path_params.get("path", "")
-    req_body = await request.body()
+    req_body = _decode_request_body(await request.body(), request.headers.get("content-encoding", ""))
 
     # Intercept and adapt POST /responses
     is_responses_api = request.method == "POST" and "responses" in full_path
@@ -132,8 +172,15 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
 
     # Filter headers to forward
     # accept-encoding is dropped: the body is re-streamed raw while content-encoding is stripped, so a compressed upstream reply would reach the client undecodable
-    excluded_headers = {"host", "content-length", "connection", "accept-encoding"}
+    # content-encoding is dropped because the body was decoded above
+    excluded_headers = {"host", "content-length", "connection", "accept-encoding", "content-encoding"}
     fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded_headers}
+    # Clients forced onto the built-in OpenAI provider (e.g. the mobile app) send a ChatGPT token; DeepSeek needs its own key
+    ds_key = _deepseek_api_key()
+    if ds_key:
+        for h in [k for k in fwd_headers if k.lower() in ("authorization", "chatgpt-account-id")]:
+            del fwd_headers[h]
+        fwd_headers["authorization"] = f"Bearer {ds_key}"
 
     if upstream_client is None:
         return JSONResponse(

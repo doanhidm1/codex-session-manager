@@ -67,8 +67,12 @@ def switch_provider_settings(codex_home, target_provider):
     }
     if target_prov == "openai":
         updates["model_catalog_json"] = None
+        updates["openai_base_url"] = None
     elif target_prov == "deepseek":
         updates["model_catalog_json"] = os.path.join(paths.codex_home, "models.json").replace("\\", "/")
+        # The mobile remote client forces model_provider=openai on thread/start and ignores config.toml's provider;
+        # pointing the built-in OpenAI provider at the proxy makes those threads reach DeepSeek too
+        updates["openai_base_url"] = PROXY_BASE_URL
 
     update_config_toml(codex_home, updates)
     if target_prov == "deepseek":
