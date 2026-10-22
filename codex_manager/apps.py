@@ -34,6 +34,9 @@ def _classify(argv):
     """Return 'desktop', 'remote-daemon', 'cli' or None for a process argv."""
     if not argv:
         return None
+    if len(argv) == 1 and " " in argv[0]:
+        # Electron/Chromium children rewrite their cmdline into one space-separated string
+        argv = argv[0].split()
     exe = argv[0]
     if exe.startswith(DESKTOP_EXE_PREFIX) and not any(a.startswith("--type=") for a in argv[1:]):
         return "desktop"

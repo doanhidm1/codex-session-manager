@@ -15,6 +15,7 @@ class TestClassify(unittest.TestCase):
     def test_kinds(self):
         self.assertEqual(apps._classify(["/usr/lib/chatgpt/ChatGPT", "--codex-browser-background-networking-disabled"]), "desktop")
         self.assertIsNone(apps._classify(["/usr/lib/chatgpt/ChatGPT", "--type=renderer"]))
+        self.assertIsNone(apps._classify(["/usr/lib/chatgpt/ChatGPT --type=zygote --no-zygote-sandbox"]))
         self.assertIsNone(apps._classify(["/usr/lib/chatgpt/resources/codex", "app-server"]))
         daemon = ["/home/u/.codex/packages/app-server-daemon/releases/x/bin/codex", "app-server", "--remote-control"]
         self.assertEqual(apps._classify(daemon), "remote-daemon")
