@@ -8,7 +8,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from codex_manager import apps
-from codex_manager.switch import restore_unarchived_rollouts
+from codex_manager.switch import restore_unarchived_rollouts, sync_desktop_catalog
 
 
 class TestClassify(unittest.TestCase):
@@ -64,6 +64,27 @@ class TestRestoreUnarchivedRollouts(unittest.TestCase):
             self.assertTrue(os.path.isfile(dest))
             self.assertEqual(conn.execute("SELECT rollout_path FROM threads WHERE id='a'").fetchone()[0], dest)
             self.assertTrue(os.path.isfile(hidden))
+
+
+class TestSyncDesktopCatalog(unittest.TestCase):
+    def test_hides_archived_and_deleted_keeps_chatgpt_rows(self):
+        state = sqlite3.connect(":memory:")
+        state.execute("CREATE TABLE threads (id TEXT, archived INTEGER)")
+        state.executemany("INSERT INTO threads VALUES (?, ?)", [("vis", 0), ("arch", 1)])
+        cat = sqlite3.connect(":memory:")
+        cat.execute(
+            "CREATE TABLE local_thread_catalog (host_id TEXT, thread_id TEXT, model_provider TEXT, missing_candidate INTEGER)"
+        )
+        cat.execute("CREATE TABLE local_thread_catalog_sync_state (host_id TEXT, last_full_reconciled_at INTEGER)")
+        cat.execute("INSERT INTO local_thread_catalog_sync_state VALUES ('local', 123)")
+        cat.executemany(
+            "INSERT INTO local_thread_catalog VALUES ('local', ?, ?, ?)",
+            [("vis", "openai", 1), ("arch", "deepseek", 0), ("gone", "openai", 0), ("chatgpt", None, 0)],
+        )
+        self.assertEqual(sync_desktop_catalog(cat, state.cursor()), 2)
+        flags = dict(cat.execute("SELECT thread_id, missing_candidate FROM local_thread_catalog").fetchall())
+        self.assertEqual(flags, {"vis": 0, "arch": 1, "gone": 1, "chatgpt": 0})
+        self.assertEqual(cat.execute("SELECT last_full_reconciled_at FROM local_thread_catalog_sync_state").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

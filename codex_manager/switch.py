@@ -262,13 +262,16 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
     )
 
     conn.commit()
-    conn.close()
     if cat_conn:
         try:
+            hidden = sync_desktop_catalog(cat_conn, cur)
+            if hidden:
+                print(f"[*] Hid {hidden} archived/deleted session(s) from the desktop Recents catalog.")
             cat_conn.commit()
             cat_conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[-] WARNING: Could not update the desktop thread catalog: {e}")
+    conn.close()
 
     # 2.5 Update automations target_thread_id if matching any pair
     # Note: Heartbeat automations must remain targeted to OpenAI threads because DeepSeek API rejects synthetic function_call_output
@@ -340,6 +343,34 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
         print("[+] Status: All sessions are now visible.")
 
     return True
+
+
+def sync_desktop_catalog(cat_conn, state_cur):
+    """
+    The desktop sidebar (Recents) reads sqlite/codex-dev.db:local_thread_catalog, which is filled incrementally
+    and keeps archived and even deleted threads. Mirror state_5 into it: local Codex threads that are archived or
+    gone get missing_candidate = 1 (excluded by the catalog's own indexes), visible ones get 0, and a full
+    reconcile is requested so the app rebuilds the catalog on next start.
+    """
+    visible = {r[0] for r in state_cur.execute("SELECT id FROM threads WHERE archived = 0").fetchall()}
+    rows = cat_conn.execute(
+        "SELECT host_id, thread_id, missing_candidate FROM local_thread_catalog "
+        "WHERE host_id = 'local' AND model_provider IS NOT NULL AND model_provider != ''"
+    ).fetchall()
+    hidden = 0
+    for host_id, tid, missing in rows:
+        want = 0 if tid in visible else 1
+        if want != missing:
+            cat_conn.execute(
+                "UPDATE local_thread_catalog SET missing_candidate = ? WHERE host_id = ? AND thread_id = ?",
+                (want, host_id, tid),
+            )
+            hidden += want
+    try:
+        cat_conn.execute("UPDATE local_thread_catalog_sync_state SET last_full_reconciled_at = 0 WHERE host_id = 'local'")
+    except sqlite3.OperationalError:
+        pass
+    return hidden
 
 
 def restore_unarchived_rollouts(cur, codex_home):
