@@ -219,10 +219,8 @@ def enable_autostart() -> bool:
 def disable_autostart() -> bool:
     """Removes the proxy autostart (Windows Startup shortcut, or the systemd user unit on Linux)."""
     if sys.platform.startswith("linux"):
-        _systemctl("disable", "--now", SYSTEMD_UNIT)
-        if os.path.exists(_systemd_unit_path()):
-            os.remove(_systemd_unit_path())
-        return _systemctl("daemon-reload")
+        # Only drop the login autostart; the unit stays so start/stop remain supervised and the proxy keeps running
+        return _systemctl("disable", SYSTEMD_UNIT)
     if sys.platform != "win32":
         return False
     startup_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
