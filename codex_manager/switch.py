@@ -250,6 +250,12 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
             except Exception:
                 pass
 
+    # Unarchiving only flips the flag; move rollouts the desktop parked in archived_sessions back,
+    # otherwise later archive/unarchive in Codex fails with "no rollout found for thread id".
+    restored = restore_unarchived_rollouts(cur, paths.codex_home)
+    if restored:
+        print(f"[*] Moved {restored} rollout file(s) back from archived_sessions/ for visible sessions.")
+
     # Ensure any archived threads do not linger in Pinned section
     cur.execute(
         "UPDATE threads SET thread_section_id = NULL, section_position = NULL, is_pinned = 0 WHERE archived = 1 AND thread_section_id IS NOT NULL"
@@ -336,8 +342,40 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
     return True
 
 
-def restart_remote_services():
-    """Restart active Codex remote daemons (user systemd) so mobile/remote clients pick up the new provider."""
+def restore_unarchived_rollouts(cur, codex_home):
+    """Move rollouts of non-archived threads out of archived_sessions/ into sessions/YYYY/MM/DD/."""
+    archived_dir = os.path.join(codex_home, "archived_sessions")
+    moved = 0
+    rows = cur.execute("SELECT id, rollout_path FROM threads WHERE archived = 0").fetchall()
+    for tid, ro_path in rows:
+        if not ro_path or not os.path.isfile(ro_path):
+            continue
+        if os.path.normcase(os.path.dirname(os.path.abspath(ro_path))) != os.path.normcase(archived_dir):
+            continue
+        m = re.match(r"rollout-(\d{4})-(\d{2})-(\d{2})T", os.path.basename(ro_path))
+        parts = m.groups() if m else time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(ro_path))).split("-")
+        dest_dir = os.path.join(codex_home, "sessions", *parts)
+        dest = os.path.join(dest_dir, os.path.basename(ro_path))
+        if os.path.exists(dest):
+            continue
+        os.makedirs(dest_dir, exist_ok=True)
+        os.replace(ro_path, dest)
+        cur.execute("UPDATE threads SET rollout_path = ? WHERE id = ?", (dest, tid))
+        moved += 1
+    return moved
+
+
+def _remote_daemon_running():
+    from .apps import detect_codex_apps
+
+    return any(a["kind"] == "remote-daemon" for a in detect_codex_apps())
+
+
+def restart_remote_services(also_start=()):
+    """
+    Restart Codex remote daemons (user systemd) so mobile/remote clients pick up the new provider.
+    Units in also_start (stopped before the switch) are started even if currently inactive.
+    """
     import shutil
     import subprocess
 
@@ -348,10 +386,17 @@ def restart_remote_services():
             active = subprocess.run(
                 ["systemctl", "--user", "is-active", "--quiet", unit], timeout=10
             ).returncode == 0
-            if not active:
+            if not active and unit not in also_start:
                 continue
-            # stop -> wait -> start (retry): an immediate restart races with the old remote-control connection
-            subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=60)
+            if active:
+                # stop -> wait -> start (retry): an immediate restart races with the old remote-control connection
+                try:
+                    subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=60)
+                except subprocess.TimeoutExpired:
+                    # A slow stop must not leave the unit dead: kill what is left and start it anyway
+                    print(f"[-] WARNING: stopping {unit} timed out; killing it and starting again.")
+                    subprocess.run(["systemctl", "--user", "kill", "--signal=SIGKILL", unit], capture_output=True, timeout=30)
+                    subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True, timeout=30)
             r = None
             for attempt in range(3):
                 time.sleep(3 + 3 * attempt)
@@ -360,15 +405,36 @@ def restart_remote_services():
                     break
             if r is not None and r.returncode == 0:
                 print(f"[+] Restarted {unit} so remote clients use the new provider.")
+            elif r is not None and "connection is errored" in (r.stderr + r.stdout) and _remote_daemon_running():
+                # chatgpt.com keeps the previous server registered for a few minutes (409 "already online");
+                # the daemon already runs with the new config and keeps reconnecting on its own
+                subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True, timeout=30)
+                print(
+                    f"[!] {unit}: daemon restarted but remote control is still reconnecting "
+                    "(chatgpt.com has not released the previous session yet). Reopen the mobile app in a few minutes."
+                )
             else:
                 print(f"[-] WARNING: Failed to restart {unit}: {(r.stderr if r else '').strip()}")
         except Exception as e:
             print(f"[-] WARNING: Could not restart {unit}: {e}")
 
 
-def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
-    """Switch provider, then restart remote daemons (Codex remote-control) when the switch succeeded."""
+def switch_provider(target_mode, codex_home, auto_sync=True, force=False, stop_apps=False):
+    """
+    Switch provider, then restart remote daemons (Codex remote-control) when the switch succeeded.
+    Running Codex apps (desktop, remote daemon, CLI) are stopped first (asks unless stop_apps=True).
+    """
+    mode = target_mode.lower().strip()
+    stopped_units = []
+    if mode in ("deepseek", "openai"):
+        from .apps import ensure_codex_apps_stopped
+
+        ok_apps, stopped_units = ensure_codex_apps_stopped(stop_apps=stop_apps)
+        if not ok_apps:
+            if stopped_units:
+                restart_remote_services(also_start=stopped_units)
+            return False
     ok = _switch_provider_impl(target_mode, codex_home, auto_sync=auto_sync, force=force)
-    if ok and target_mode.lower().strip() in ("deepseek", "openai"):
-        restart_remote_services()
+    if mode in ("deepseek", "openai") and (ok or stopped_units):
+        restart_remote_services(also_start=stopped_units)
     return ok
