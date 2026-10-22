@@ -26,7 +26,9 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
     - Checks if DeepSeek is configured in config.toml.
     - Preserves model settings and reasoning effort from previous selections.
     - Generates full backup snapshot before mutating database.
-    - Builds wire-compliant rollout JSONL.
+    - Builds the clone as an empty wire-compliant rollout JSONL, then appends every turn through sync_threads,
+      i.e. exactly like a later incremental sync: tool calls/outputs, steer messages, images and delegation cards
+      are kept, reasoning is skipped.
     - Projects byte offsets into thread_history_1.sqlite.
     - Inserts new row into state_5.sqlite and records mapping pair in session_manager.sqlite.
     """
@@ -133,7 +135,7 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
             new_model=new_model,
             target_provider=target_provider,
             clean_cwd=clean_cwd,
-            turns=turns,
+            turns=[],
             out_rollout_path=out_rollout,
         )
 
@@ -176,6 +178,15 @@ def migrate_thread(source_thread_id, target_provider, codex_home):
         bm["created_rollout"] = out_rollout
         with open(backup_meta_file, "w", encoding="utf-8") as f:
             json.dump(bm, f, ensure_ascii=False, indent=2)
+
+        from .sync import sync_threads
+
+        print(f"[*] Appending all turns of [{source_thread_id[:8]}] (same path as incremental sync)...")
+        if not sync_threads(source_thread_id, new_thread_id, codex_home, force=True):
+            print(
+                "[!] Appending turns failed; the new session was created empty. "
+                f"Retry with: sync {source_thread_id} {new_thread_id}  (or: rollback {new_thread_id})"
+            )
 
         print(f"SUCCESS:{new_thread_id}:{new_name}:{backup_dir}")
         return True

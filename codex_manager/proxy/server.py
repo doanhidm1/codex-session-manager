@@ -131,7 +131,8 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
         replacements.extend(DELEGATION_STREAM_REPLACEMENTS)
 
     # Filter headers to forward
-    excluded_headers = {"host", "content-length", "connection"}
+    # accept-encoding is dropped: the body is re-streamed raw while content-encoding is stripped, so a compressed upstream reply would reach the client undecodable
+    excluded_headers = {"host", "content-length", "connection", "accept-encoding"}
     fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded_headers}
 
     if upstream_client is None:
@@ -161,7 +162,7 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
             try:
                 buffer = b""
                 overlap = 80
-                async for chunk in resp.aiter_raw():
+                async for chunk in resp.aiter_bytes():
                     if replacements:
                         buffer += chunk
                         for oai_b, ds_b in replacements:

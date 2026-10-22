@@ -161,13 +161,9 @@ def stream_turn_wire_records(
                 itype_raw = it.get("type", "")
                 iid = it.get("id", "")
 
-                if (
-                    tgt_prov == "openai"
-                    and itype_raw in ("reasoning", "Reasoning")
-                    and not (it.get("encrypted_content") or "").startswith("gAAAAAB")
-                ):
-                    if not (source_items_map and iid in source_items_map):
-                        continue
+                # Reasoning never crosses providers (encrypted/foreign blobs are unusable on the other side): drop it both ways
+                if itype_raw in ("reasoning", "Reasoning"):
+                    continue
 
                 is_converted_xml = False
                 # DeepSeek API compatibility: synthetic tool call outputs must be standard user XML
@@ -321,15 +317,13 @@ def stream_turn_wire_records(
                 if pname:
                     p["name"] = sanitize_tool_name(pname)
 
+            if ptype == "reasoning":
+                # Reasoning is provider-specific (OpenAI encrypted_content / DeepSeek reasoning_content) and cannot be
+                # replayed on the other provider, so it is skipped in both directions. Tool calls/outputs are kept.
+                continue
+
             if tgt_prov == "openai":
-                if ptype == "reasoning":
-                    enc = p.get("encrypted_content") or ""
-                    if not enc.startswith("gAAAAAB"):
-                        # Non-OpenAI reasoning item: OpenAI server cannot decrypt foreign encrypted_content.
-                        # Omitting it from the JSONL rollout prevents: "The encrypted content ... could not be verified."
-                        continue
-                    p["content"] = None
-                elif ptype == "message":
+                if ptype == "message":
                     mid = p.get("id") or ""
                     if mid and not mid.startswith("msg"):
                         p["id"] = "msg_" + (mid[4:] if mid.startswith("fco_") else mid)

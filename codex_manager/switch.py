@@ -1,6 +1,7 @@
 import os
 import re
 import sqlite3
+import time
 
 from .config import CodexPaths
 from .db import get_connection
@@ -8,12 +9,19 @@ from .mapping import auto_seed_existing_pairs, get_all_pairs, update_last_synced
 from .provider import (
     SUPPORTED_PROVIDERS,
     detect_current_provider_settings,
+    get_config_web_search,
     get_last_provider_settings,
+    get_last_web_search,
     save_provider_settings,
+    save_web_search,
     warn_if_deepseek_unconfigured,
 )
 from .sync import sync_threads
-from .toml_utils import update_config_toml
+from .toml_utils import set_section_key, update_config_toml
+
+PROXY_BASE_URL = "http://127.0.0.1:8765/"
+# Long-running daemons that read config.toml / thread state at start; they must be restarted after a switch
+REMOTE_SERVICES = ("codex-rc.service", "codex-session-bridge.service")
 
 
 def switch_provider_settings(codex_home, target_provider):
@@ -35,7 +43,10 @@ def switch_provider_settings(codex_home, target_provider):
     if outgoing_prov in SUPPORTED_PROVIDERS and outgoing_prov != target_prov:
         out_model, out_effort = detect_current_provider_settings(codex_home, outgoing_prov)
         save_provider_settings(paths.mapping_db, outgoing_prov, out_model, out_effort)
+        # web_search differs per provider (OpenAI hosted tool vs DeepSeek server-side search): persist it too
+        save_web_search(paths.mapping_db, outgoing_prov, get_config_web_search(paths.config_toml))
 
+    target_web_search = get_last_web_search(paths.mapping_db, target_prov)
     target_model, target_effort = get_last_provider_settings(paths.mapping_db, target_prov)
     if not target_model:
         target_model, target_effort = detect_current_provider_settings(codex_home, target_prov)
@@ -49,6 +60,10 @@ def switch_provider_settings(codex_home, target_provider):
         "model_reasoning_effort": target_effort,
         "model_context_window": 1000000,
         "model_auto_compact_token_limit": 900000,
+        "web_search": target_web_search,
+        # Left behind by the DeepSeek one-click setup script; they force API-key login and break the OpenAI/ChatGPT mode
+        "forced_login_method": None,
+        "preferred_auth_method": None,
     }
     if target_prov == "openai":
         updates["model_catalog_json"] = None
@@ -56,10 +71,13 @@ def switch_provider_settings(codex_home, target_provider):
         updates["model_catalog_json"] = os.path.join(paths.codex_home, "models.json").replace("\\", "/")
 
     update_config_toml(codex_home, updates)
+    if target_prov == "deepseek":
+        # Codex must talk to the local reverse proxy (adapter + thread-id remap), not api.deepseek.com directly
+        set_section_key(codex_home, "model_providers.deepseek", "base_url", PROXY_BASE_URL)
     return target_model, target_effort
 
 
-def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
+def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
     """
     Switch active provider on PC and Mobile:
     1. Detects and halts if any Codex session is currently running.
@@ -312,3 +330,41 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
         print("[+] Status: All sessions are now visible.")
 
     return True
+
+
+def restart_remote_services():
+    """Restart active Codex remote daemons (user systemd) so mobile/remote clients pick up the new provider."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("systemctl"):
+        return
+    for unit in REMOTE_SERVICES:
+        try:
+            active = subprocess.run(
+                ["systemctl", "--user", "is-active", "--quiet", unit], timeout=10
+            ).returncode == 0
+            if not active:
+                continue
+            # stop -> wait -> start (retry): an immediate restart races with the old remote-control connection
+            subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=60)
+            r = None
+            for attempt in range(3):
+                time.sleep(3 + 3 * attempt)
+                r = subprocess.run(["systemctl", "--user", "start", unit], capture_output=True, text=True, timeout=90)
+                if r.returncode == 0:
+                    break
+            if r is not None and r.returncode == 0:
+                print(f"[+] Restarted {unit} so remote clients use the new provider.")
+            else:
+                print(f"[-] WARNING: Failed to restart {unit}: {(r.stderr if r else '').strip()}")
+        except Exception as e:
+            print(f"[-] WARNING: Could not restart {unit}: {e}")
+
+
+def switch_provider(target_mode, codex_home, auto_sync=True, force=False):
+    """Switch provider, then restart remote daemons (Codex remote-control) when the switch succeeded."""
+    ok = _switch_provider_impl(target_mode, codex_home, auto_sync=auto_sync, force=force)
+    if ok and target_mode.lower().strip() in ("deepseek", "openai"):
+        restart_remote_services()
+    return ok

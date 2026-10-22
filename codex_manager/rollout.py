@@ -78,29 +78,28 @@ def build_migrated_rollout_file(
 
         add_rec("turn_context", {"turn_id": tid, "root_turn_id": tid, "cwd": clean_cwd, "model": new_model})
 
-        user_combined = "\n\n".join(t["user_messages"])
-        u_msg_id = f"msg_u_{tid[:8]}"
-        u_item_id = f"item_u_{tid[:8]}"
-
-        add_rec(
-            "response_item",
-            {
-                "type": "message",
-                "id": u_msg_id,
-                "role": "user",
-                "content": [{"type": "input_text", "text": user_combined}],
-            },
-        )
-
-        add_rec(
-            "event_msg",
-            {
-                "type": "item_completed",
-                "thread_id": new_thread_id,
-                "turn_id": tid,
-                "item": {"type": "UserMessage", "id": u_item_id, "content": [{"type": "text", "text": user_combined}]},
-            },
-        )
+        # Keep every user message as its own item (no concatenation): Codex renders wrappers such as
+        # <send_user_message_question_reply> as a Q&A card only when they are a standalone message.
+        for u_idx, u_text in enumerate(t["user_messages"]):
+            suffix = tid[:8] if u_idx == 0 else f"{tid[:8]}_{u_idx}"
+            add_rec(
+                "response_item",
+                {
+                    "type": "message",
+                    "id": f"msg_u_{suffix}",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": u_text}],
+                },
+            )
+            add_rec(
+                "event_msg",
+                {
+                    "type": "item_completed",
+                    "thread_id": new_thread_id,
+                    "turn_id": tid,
+                    "item": {"type": "UserMessage", "id": f"item_u_{suffix}", "content": [{"type": "text", "text": u_text}]},
+                },
+            )
 
         agent_reply = t.get("last_agent_message", "")
         if not agent_reply and t.get("agent_messages"):
