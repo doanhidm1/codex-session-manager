@@ -39,6 +39,34 @@ def get_proxy_status(host: str = PROXY_HOST, port: int = PROXY_PORT) -> Dict[str
     }
 
 
+SYSTEMD_UNIT = "codex-deepseek-proxy.service"
+
+
+def _systemd_unit_path() -> str:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "systemd", "user", SYSTEMD_UNIT)
+
+
+def _systemctl(*args: str) -> bool:
+    try:
+        return subprocess.run(["systemctl", "--user", *args], capture_output=True, timeout=30).returncode == 0
+    except Exception:
+        return False
+
+
+def _use_systemd() -> bool:
+    return sys.platform.startswith("linux") and os.path.exists(_systemd_unit_path())
+
+
+def _wait_until(predicate, timeout_sec: float = 5.0) -> bool:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.2)
+    return predicate()
+
+
 def start_proxy_daemon(host: str = PROXY_HOST, port: int = PROXY_PORT) -> bool:
     """
     Starts the reverse proxy in the background if it's not already running.
@@ -47,6 +75,11 @@ def start_proxy_daemon(host: str = PROXY_HOST, port: int = PROXY_PORT) -> bool:
     if is_proxy_running(host, port):
         logger.info("DeepSeek proxy is already running on http://%s:%d", host, port)
         return True
+
+    if _use_systemd():
+        # Supervised by systemd: survives the terminal/session that ran the switch and restarts on crash
+        _systemctl("start", SYSTEMD_UNIT)
+        return _wait_until(lambda: is_proxy_running(host, port))
 
     logger.info("Starting DeepSeek proxy daemon on http://%s:%d...", host, port)
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -67,6 +100,9 @@ def start_proxy_daemon(host: str = PROXY_HOST, port: int = PROXY_PORT) -> bool:
         kwargs["creationflags"] = (
             subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
         )
+    else:
+        # Detach from the caller's session so closing the terminal (or the agent shell) does not kill the proxy
+        kwargs["start_new_session"] = True
 
     try:
         subprocess.Popen([sys.executable, proxy_script, str(port)], **kwargs)
@@ -91,6 +127,11 @@ def stop_proxy_daemon(host: str = PROXY_HOST, port: int = PROXY_PORT) -> bool:
     Requests the proxy to gracefully shut down via admin endpoint.
     Returns True if stopped.
     """
+    if _use_systemd():
+        # Stop through the unit, otherwise Restart= would bring the proxy back
+        _systemctl("stop", SYSTEMD_UNIT)
+        return _wait_until(lambda: not is_proxy_running(host, port), 3.0)
+
     if not is_proxy_running(host, port):
         logger.info("Proxy is not running.")
         return True
@@ -111,8 +152,41 @@ def stop_proxy_daemon(host: str = PROXY_HOST, port: int = PROXY_PORT) -> bool:
     return not is_proxy_running(host, port)
 
 
+def _enable_systemd_autostart() -> bool:
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    proxy_script = os.path.join(repo_root, "codex_manager", "deepseek_proxy.py")
+    unit = f"""[Unit]
+Description=Codex DeepSeek reverse proxy (127.0.0.1:{PROXY_PORT})
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={repo_root}
+Environment=PYTHONPATH={repo_root}
+ExecStart={sys.executable} {proxy_script} {PROXY_PORT}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+"""
+    os.makedirs(os.path.dirname(_systemd_unit_path()), exist_ok=True)
+    with open(_systemd_unit_path(), "w", encoding="utf-8") as f:
+        f.write(unit)
+    # Hand a manually started proxy over to systemd
+    if is_proxy_running() and not _systemctl("is-active", "--quiet", SYSTEMD_UNIT):
+        try:
+            httpx.post(f"http://{PROXY_HOST}:{PROXY_PORT}/shutdown", timeout=2.0)
+        except Exception:
+            pass
+        _wait_until(lambda: not is_proxy_running(), 3.0)
+    return _systemctl("daemon-reload") and _systemctl("enable", "--now", SYSTEMD_UNIT)
+
+
 def enable_autostart() -> bool:
-    """Configures the proxy to start automatically on Windows boot."""
+    """Configures the proxy to start automatically (Windows Startup shortcut, or a systemd user unit on Linux)."""
+    if sys.platform.startswith("linux"):
+        return _enable_systemd_autostart()
     if sys.platform != "win32":
         return False
     startup_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
@@ -143,7 +217,12 @@ def enable_autostart() -> bool:
 
 
 def disable_autostart() -> bool:
-    """Removes the proxy autostart shortcut from Windows Startup."""
+    """Removes the proxy autostart (Windows Startup shortcut, or the systemd user unit on Linux)."""
+    if sys.platform.startswith("linux"):
+        _systemctl("disable", "--now", SYSTEMD_UNIT)
+        if os.path.exists(_systemd_unit_path()):
+            os.remove(_systemd_unit_path())
+        return _systemctl("daemon-reload")
     if sys.platform != "win32":
         return False
     startup_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")

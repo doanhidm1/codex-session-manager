@@ -274,17 +274,17 @@ def main():
             from .proxy.daemon import enable_autostart
 
             if enable_autostart():
-                print("[+] Auto-start on Windows boot enabled successfully!")
+                print("[+] Proxy auto-start enabled (Windows Startup shortcut / systemd user unit on Linux).")
             else:
-                print("[-] Failed to enable auto-start on Windows boot.")
+                print("[-] Failed to enable proxy auto-start.")
                 return 1
         elif action in ("disable-autostart", "autostart-disable"):
             from .proxy.daemon import disable_autostart
 
             if disable_autostart():
-                print("[+] Auto-start on Windows boot disabled.")
+                print("[+] Proxy auto-start disabled.")
             else:
-                print("[-] Failed to disable auto-start on Windows boot.")
+                print("[-] Failed to disable proxy auto-start.")
                 return 1
         else:
             print(
