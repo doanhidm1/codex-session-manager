@@ -8,7 +8,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from codex_manager import apps
-from codex_manager.switch import restore_unarchived_rollouts, sync_desktop_catalog
+from codex_manager.switch import move_queued_items, restore_unarchived_rollouts, sync_desktop_catalog, sync_turn_statuses
 
 
 class TestClassify(unittest.TestCase):
@@ -86,6 +86,37 @@ class TestSyncDesktopCatalog(unittest.TestCase):
         flags = dict(cat.execute("SELECT thread_id, missing_candidate FROM local_thread_catalog").fetchall())
         self.assertEqual(flags, {"vis": 0, "arch": 1, "gone": 1, "chatgpt": 0})
         self.assertEqual(cat.execute("SELECT last_full_reconciled_at FROM local_thread_catalog_sync_state").fetchone()[0], 0)
+
+
+class TestCarryTurnStateAndQueue(unittest.TestCase):
+    def test_interrupted_status_copied(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = os.path.join(d, "th.sqlite")
+            with sqlite3.connect(db) as c:
+                c.execute("CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT, status TEXT)")
+                c.executemany(
+                    "INSERT INTO thread_turns VALUES (?, ?, ?)",
+                    [("o", "t1", "completed"), ("o", "t2", "interrupted"), ("d", "t1", "completed"), ("d", "t2", "completed")],
+                )
+            self.assertEqual(sync_turn_statuses(db, "o", "d"), 1)
+            with sqlite3.connect(db) as c:
+                self.assertEqual(c.execute("SELECT status FROM thread_turns WHERE thread_id='d' AND turn_id='t2'").fetchone()[0], "interrupted")
+
+    def test_queue_moved_in_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = os.path.join(d, "queue.sqlite")
+            with sqlite3.connect(db) as c:
+                c.execute(
+                    "CREATE TABLE queued_items (id TEXT PRIMARY KEY, thread_id TEXT, payload_json TEXT, queue_order INTEGER, "
+                    "created_at_ms INTEGER, updated_at_ms INTEGER, UNIQUE(thread_id, queue_order))"
+                )
+                c.executemany(
+                    "INSERT INTO queued_items VALUES (?, ?, '{}', ?, 0, 0)", [("a", "o", 4), ("b", "o", 5), ("c", "d", 0)]
+                )
+            self.assertEqual(move_queued_items(db, "o", "d"), 2)
+            with sqlite3.connect(db) as c:
+                rows = c.execute("SELECT id FROM queued_items WHERE thread_id='d' ORDER BY queue_order").fetchall()
+            self.assertEqual([r[0] for r in rows], ["c", "a", "b"])
 
 
 if __name__ == "__main__":

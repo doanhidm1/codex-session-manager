@@ -175,6 +175,20 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
 
     heal_thread_items_sources(paths.th_db)
 
+    # 1.2 Carry turn state (interrupted turns) and queued follow-up messages to the session that becomes visible
+    if mode in ("deepseek", "openai"):
+        queue_db = os.path.join(paths.codex_home, "queue_1.sqlite")
+        fixed = moved = 0
+        for p in pairs:
+            _, _, o_id, d_id, _, _, _ = p
+            src, dst = (o_id, d_id) if mode == "deepseek" else (d_id, o_id)
+            fixed += sync_turn_statuses(paths.th_db, src, dst)
+            moved += move_queued_items(queue_db, src, dst)
+        if fixed:
+            print(f"[*] Restored {fixed} interrupted turn state(s) on the target sessions.")
+        if moved:
+            print(f"[*] Moved {moved} queued message(s) to the target sessions.")
+
     # 1.3 Sync goals across registered pairs
     from .goals import sync_goals
 
@@ -343,6 +357,46 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
         print("[+] Status: All sessions are now visible.")
 
     return True
+
+
+def sync_turn_statuses(th_db, src_id, dst_id):
+    """Copy non-completed turn statuses (interrupted/failed) from src to the same turns of dst."""
+    if not os.path.exists(th_db):
+        return 0
+    with sqlite3.connect(th_db, timeout=10.0) as conn:
+        rows = conn.execute(
+            "SELECT turn_id, status FROM thread_turns WHERE thread_id = ? AND status IN ('interrupted', 'failed')",
+            (src_id,),
+        ).fetchall()
+        fixed = 0
+        for turn_id, status in rows:
+            fixed += conn.execute(
+                "UPDATE thread_turns SET status = ? WHERE thread_id = ? AND turn_id = ? AND status = 'completed'",
+                (status, dst_id, turn_id),
+            ).rowcount
+        return fixed
+
+
+def move_queued_items(queue_db, src_id, dst_id):
+    """Move queued follow-up messages from the session being hidden to its visible pair (appended in order)."""
+    if not os.path.exists(queue_db) or src_id == dst_id:
+        return 0
+    with sqlite3.connect(queue_db, timeout=10.0) as conn:
+        items = conn.execute(
+            "SELECT id FROM queued_items WHERE thread_id = ? ORDER BY queue_order", (src_id,)
+        ).fetchall()
+        if not items:
+            return 0
+        base = conn.execute(
+            "SELECT COALESCE(MAX(queue_order), -1) + 1 FROM queued_items WHERE thread_id = ?", (dst_id,)
+        ).fetchone()[0]
+        now_ms = int(time.time() * 1000)
+        for i, (item_id,) in enumerate(items):
+            conn.execute(
+                "UPDATE queued_items SET thread_id = ?, queue_order = ?, updated_at_ms = ? WHERE id = ?",
+                (dst_id, base + i, now_ms, item_id),
+            )
+        return len(items)
 
 
 def sync_desktop_catalog(cat_conn, state_cur):

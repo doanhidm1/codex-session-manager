@@ -133,6 +133,7 @@ def stream_turn_wire_records(
     completed_at = orig_completed_at or started_at
     duration_ms = None
     error_json = None
+    aborted = False
     turn_start_ord = curr_ord
     turn_start_offset = curr_offset
 
@@ -156,6 +157,11 @@ def stream_turn_wire_records(
                 duration_ms = p.get("duration_ms")
                 if p.get("error"):
                     error_json = json.dumps(p.get("error"), ensure_ascii=False)
+            elif ptype == "turn_aborted" and p.get("turn_id") in (None, tid):
+                # Stopped by the user: keep it interrupted so Codex shows the turn as stopped and the queue as paused
+                aborted = True
+                completed_at = p.get("completed_at") or completed_at
+                duration_ms = p.get("duration_ms") or duration_ms
             elif ptype == "item_completed":
                 it = p.get("item", {})
                 itype_raw = it.get("type", "")
@@ -366,7 +372,7 @@ def stream_turn_wire_records(
         "thread_id": tgt_id,
         "turn_id": tid,
         "rollout_ordinal": turn_start_ord,
-        "status": "failed" if error_json else "completed",
+        "status": "failed" if error_json else ("interrupted" if aborted else "completed"),
         "error_json": error_json,
         "started_at": started_at,
         "completed_at": completed_at,
