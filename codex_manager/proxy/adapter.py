@@ -111,6 +111,44 @@ def is_tool_followup_turn(input_items: List[Dict[str, Any]]) -> bool:
     return False
 
 
+_CALL_TYPES = ("function_call", "custom_tool_call")
+_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
+
+
+def keep_tool_outputs_adjacent(items: List[Any]) -> List[Any]:
+    """
+    Defer any non-tool item that appears while tool calls are still waiting for their outputs, so every
+    call is directly followed by its output. Returns the same list object when nothing had to move.
+    """
+    answered = {
+        str(it.get("call_id"))
+        for it in items
+        if isinstance(it, dict) and it.get("type") in _OUTPUT_TYPES and it.get("call_id")
+    }
+    out: List[Any] = []
+    deferred: List[Any] = []
+    pending: Set[str] = set()
+    for it in items:
+        itype = it.get("type") if isinstance(it, dict) else None
+        if itype in _CALL_TYPES:
+            cid = str(it.get("call_id") or "")
+            if cid in answered:
+                pending.add(cid)
+            out.append(it)
+        elif itype in _OUTPUT_TYPES:
+            out.append(it)
+            pending.discard(str(it.get("call_id") or ""))
+            if not pending and deferred:
+                out.extend(deferred)
+                deferred = []
+        elif pending:
+            deferred.append(it)
+        else:
+            out.append(it)
+    out.extend(deferred)
+    return items if out == items else out
+
+
 def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = None) -> bytes:
     """
     Inspects and adapts the JSON body for DeepSeek Responses API.
@@ -249,6 +287,14 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
                 continue
 
         new_input.append(item)
+
+    # 3.5 DeepSeek requires each tool output right after its call; hooks (e.g. a PostToolUse developer
+    # message) can land in between, which DeepSeek rejects with "No tool output found for tool call ..."
+    reordered = keep_tool_outputs_adjacent(new_input)
+    if reordered is not new_input:
+        new_input = reordered
+        adapted = True
+        logger.info("Moved item(s) that sat between a tool call and its output after the output.")
 
     # 4. Construct effective directive with active DeepSeek thread registry
     effective_directive = TOOL_DIRECTIVE

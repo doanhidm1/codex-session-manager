@@ -60,6 +60,28 @@ class TestFlatMcpToolNames(unittest.TestCase):
         self.assertEqual(server._mcp_namespaces(body), {"mcp__linear"})
 
 
+class TestToolOutputAdjacency(unittest.TestCase):
+    def test_hook_message_moved_after_output(self):
+        from codex_manager.proxy.adapter import keep_tool_outputs_adjacent
+
+        call = {"type": "custom_tool_call", "call_id": "c1", "name": "apply_patch"}
+        hook = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "hook"}]}
+        out = {"type": "custom_tool_call_output", "call_id": "c1", "output": "ok"}
+        user = {"type": "message", "role": "user", "content": []}
+        self.assertEqual(keep_tool_outputs_adjacent([call, hook, out, user]), [call, out, hook, user])
+
+    def test_ordered_or_unanswered_untouched(self):
+        from codex_manager.proxy.adapter import keep_tool_outputs_adjacent
+
+        a = {"type": "function_call", "call_id": "a"}
+        a_out = {"type": "function_call_output", "call_id": "a"}
+        msg = {"type": "message", "role": "user"}
+        ordered = [a, a_out, msg]
+        self.assertIs(keep_tool_outputs_adjacent(ordered), ordered)
+        unanswered = [{"type": "function_call", "call_id": "x"}, msg]
+        self.assertIs(keep_tool_outputs_adjacent(unanswered), unanswered)
+
+
 class TestDeepSeekKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
