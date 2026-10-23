@@ -15,6 +15,8 @@ INTERNAL_CONTEXT_TAGS = (
     "<model_switch",
     "<recommended_plugins",
     "<turn_aborted",
+    # App/page state the desktop injects as user input, e.g. <external_codex_apps_open_page>{"page_id":null}
+    "<external_codex_",
 )
 
 

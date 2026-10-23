@@ -57,3 +57,42 @@ def update_config_toml(codex_home, updates):
         f.write(top_part + rest)
 
     return True
+
+
+def read_top_level_value(config_path, key):
+    """Return the string value of a top-level key in config.toml (None if absent)."""
+    text = read_config_toml(config_path)
+    if text is None:
+        return None
+    m = re.search(r"(?m)^\[", text)
+    top = text[: m.start()] if m else text
+    km = re.search(rf'(?m)^{re.escape(key)}\s*=\s*"([^"]*)"', top)
+    return km.group(1) if km else None
+
+
+def set_section_key(codex_home, section, key, value):
+    """
+    Set `key = "value"` inside an existing [section] of config.toml (no-op if the
+    section does not exist). Returns True when the file content changed.
+    """
+    paths = CodexPaths(codex_home)
+    text = read_config_toml(paths.config_toml)
+    if text is None:
+        return False
+    sm = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
+    if not sm:
+        return False
+    nxt = re.search(r"(?m)^\[", text[sm.end():])
+    end = sm.end() + nxt.start() if nxt else len(text)
+    body = text[sm.end():end]
+    line = f'{key} = "{value}"'
+    km = re.search(rf"(?m)^{re.escape(key)}\s*=.*$", body)
+    if km:
+        if km.group(0).strip() == line:
+            return False
+        body = body[: km.start()] + line + body[km.end():]
+    else:
+        body = "\n" + line + body
+    with open(paths.config_toml, "w", encoding="utf-8") as f:
+        f.write(text[: sm.end()] + body + text[end:])
+    return True

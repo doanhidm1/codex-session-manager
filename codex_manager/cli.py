@@ -40,6 +40,7 @@ Global options:
     --codex-home <path>            Specify custom .codex home directory (auto-detected by default)
     --no-sync                      Skip automatic sync step during switch
     --force                        Rebuild broken/deleted target via full convert (rejects if Codex busy)
+    --stop-apps                    switch: stop running Codex desktop/CLI/remote daemon without asking
     --overwrite                    Full convert overwrite: rebuild target cleanly from source
     --help, -h                     Show this help message
 """)
@@ -64,6 +65,11 @@ def main():
     if "--no-sync" in args:
         args.remove("--no-sync")
         no_sync = True
+
+    stop_apps = False
+    if "--stop-apps" in args:
+        args.remove("--stop-apps")
+        stop_apps = True
 
     if "--force" in args:
         args.remove("--force")
@@ -90,7 +96,7 @@ def main():
         list_threads(paths.state_db)
     elif cmd == "switch":
         mode = args[1] if len(args) > 1 else "deepseek"
-        switch_provider(mode, codex_home, auto_sync=(not no_sync), force=force)
+        switch_provider(mode, codex_home, auto_sync=(not no_sync), force=force, stop_apps=stop_apps)
     elif cmd in ("running", "active"):
         from .activity import print_running_status
 
@@ -143,7 +149,7 @@ def main():
                     )
                 overwrite_target_from_source(s_arg, t_arg, codex_home, force=force)
         elif len(args) > 1 and args[1].lower() in ("openai", "deepseek"):
-            switch_provider(args[1].lower(), codex_home, auto_sync=True, force=force)
+            switch_provider(args[1].lower(), codex_home, auto_sync=True, force=force, stop_apps=stop_apps)
         elif len(args) < 2 or args[1].lower() == "all":
             sync_all_pairs(codex_home, force=force)
         else:
@@ -268,17 +274,17 @@ def main():
             from .proxy.daemon import enable_autostart
 
             if enable_autostart():
-                print("[+] Auto-start on Windows boot enabled successfully!")
+                print("[+] Proxy auto-start enabled (Windows Startup shortcut / systemd user unit on Linux).")
             else:
-                print("[-] Failed to enable auto-start on Windows boot.")
+                print("[-] Failed to enable proxy auto-start.")
                 return 1
         elif action in ("disable-autostart", "autostart-disable"):
             from .proxy.daemon import disable_autostart
 
             if disable_autostart():
-                print("[+] Auto-start on Windows boot disabled.")
+                print("[+] Proxy auto-start disabled.")
             else:
-                print("[-] Failed to disable auto-start on Windows boot.")
+                print("[-] Failed to disable proxy auto-start.")
                 return 1
         else:
             print(

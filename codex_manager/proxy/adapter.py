@@ -111,6 +111,77 @@ def is_tool_followup_turn(input_items: List[Dict[str, Any]]) -> bool:
     return False
 
 
+_CALL_TYPES = ("function_call", "custom_tool_call")
+_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
+
+
+def keep_tool_outputs_adjacent(items: List[Any]) -> List[Any]:
+    """
+    Defer any non-tool item that appears while tool calls are still waiting for their outputs, so every
+    call is directly followed by its output. Returns the same list object when nothing had to move.
+    """
+    answered = {
+        str(it.get("call_id"))
+        for it in items
+        if isinstance(it, dict) and it.get("type") in _OUTPUT_TYPES and it.get("call_id")
+    }
+    out: List[Any] = []
+    deferred: List[Any] = []
+    pending: Set[str] = set()
+    for it in items:
+        itype = it.get("type") if isinstance(it, dict) else None
+        if itype in _CALL_TYPES:
+            cid = str(it.get("call_id") or "")
+            if cid in answered:
+                pending.add(cid)
+            out.append(it)
+        elif itype in _OUTPUT_TYPES:
+            out.append(it)
+            pending.discard(str(it.get("call_id") or ""))
+            if not pending and deferred:
+                out.extend(deferred)
+                deferred = []
+        elif pending:
+            deferred.append(it)
+        else:
+            out.append(it)
+    out.extend(deferred)
+    return items if out == items else out
+
+
+IMAGE_PLACEHOLDER = (
+    "[image omitted: this model is text-only and cannot see images. Use text tools instead, "
+    "e.g. chrome take_snapshot / evaluate_script, or read the file contents.]"
+)
+
+
+def strip_images(items: List[Any]) -> bool:
+    """Replace input_image parts (in messages and tool outputs) with a text placeholder. Returns True if changed."""
+    changed = False
+
+    def clean(parts: Any) -> Any:
+        nonlocal changed
+        if not isinstance(parts, list):
+            return parts
+        out = []
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") == "input_image":
+                out.append({"type": "input_text", "text": IMAGE_PLACEHOLDER})
+                changed = True
+            else:
+                out.append(part)
+        return out
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") == "message":
+            it["content"] = clean(it.get("content"))
+        elif it.get("type") in _OUTPUT_TYPES:
+            it["output"] = clean(it.get("output"))
+    return changed
+
+
 def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = None) -> bytes:
     """
     Inspects and adapts the JSON body for DeepSeek Responses API.
@@ -250,6 +321,14 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
 
         new_input.append(item)
 
+    # 3.5 DeepSeek requires each tool output right after its call; hooks (e.g. a PostToolUse developer
+    # message) can land in between, which DeepSeek rejects with "No tool output found for tool call ..."
+    reordered = keep_tool_outputs_adjacent(new_input)
+    if reordered is not new_input:
+        new_input = reordered
+        adapted = True
+        logger.info("Moved item(s) that sat between a tool call and its output after the output.")
+
     # 4. Construct effective directive with active DeepSeek thread registry
     effective_directive = TOOL_DIRECTIVE
     if pairs_info:
@@ -290,21 +369,30 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
         )
         adapted = True
 
-    # 5. Append reminder to the last user message
-    for item in reversed(new_input):
+    # 5. Append the reminder to every user message. Adding it only to the latest one moved it on each new user
+    # message, changing an earlier part of the prompt and invalidating DeepSeek's prefix cache from that point on.
+    for item in new_input:
         if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user":
             content = item.get("content")
             if isinstance(content, list) and len(content) > 0:
                 last_block = content[-1]
-                if isinstance(last_block, dict) and "text" in last_block:
+                if isinstance(last_block, dict) and "text" in last_block and not str(last_block["text"]).endswith(
+                    USER_TOOL_REMINDER
+                ):
                     last_block["text"] += USER_TOOL_REMINDER
                     adapted = True
-                    break
+
+    # 5.5 DeepSeek is text-only: images are dropped upstream (not billed, never seen by the model) but each one is
+    # still uploaded as base64 on every request. Replace them with a short note so the model knows to use text tools.
+    if strip_images(new_input):
+        adapted = True
 
     # 6. Dynamic Reasoning Effort Adaptation:
     # - If intermediate tool step: enforce 'low' reasoning effort to prevent wasting token budget.
     # - If direct user chat: preserve user-selected effort as-is (Codex UI natively offers low, medium, high).
-    if is_tool_followup_turn(new_input):
+    # Off by default: it silently overrode the effort the user picked (e.g. max) on every tool step.
+    # Opt in with DEEPSEEK_PROXY_LOW_EFFORT_TOOL_STEPS=1.
+    if os.environ.get("DEEPSEEK_PROXY_LOW_EFFORT_TOOL_STEPS") == "1" and is_tool_followup_turn(new_input):
         target_effort = "low"
         if "reasoning" in data and isinstance(data["reasoning"], dict):
             if data["reasoning"].get("effort") != target_effort:
