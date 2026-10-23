@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, Set
 
@@ -31,6 +32,7 @@ from .config import (
     UPSTREAM_CONNECT_TIMEOUT_SEC,
     UPSTREAM_TIMEOUT_SEC,
 )
+from . import reqlog
 from .reconciler import reconcile_automations, reconcile_delegation_turns
 
 logger = logging.getLogger("deepseek_proxy.server")
@@ -236,6 +238,8 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
             content=req_body,
         )
 
+        log_rec = reqlog.describe_request(req_body, dict(request.headers)) if is_responses_api and reqlog.enabled() else None
+        started = time.time()
         resp = await upstream_client.send(req, stream=True)
 
         resp_headers = {
@@ -245,11 +249,14 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
         }
 
         async def stream_generator():
+            tail = b""
             try:
                 buffer = b""
                 # Must exceed the longest pattern so a match split across chunks is completed before it is emitted
                 overlap = 512
                 async for chunk in resp.aiter_bytes():
+                    if log_rec is not None:
+                        tail = (tail + chunk)[-262144:]
                     if replacements:
                         buffer += chunk
                         for oai_b, ds_b in replacements:
@@ -269,6 +276,7 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
                     yield buffer
             finally:
                 await resp.aclose()
+                reqlog.finish(log_rec, resp.status_code, tail, started)
                 # If this was a Responses API stream, trigger reconciliation in background
                 if is_responses_api:
                     await asyncio.sleep(0.5)

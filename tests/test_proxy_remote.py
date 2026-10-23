@@ -113,6 +113,26 @@ class TestPromptCacheStability(unittest.TestCase):
         self.assertIn(IMAGE_PLACEHOLDER, json.dumps(res))
 
 
+class TestRequestLog(unittest.TestCase):
+    def test_divergence_and_usage(self):
+        from codex_manager.proxy import reqlog
+
+        def body(texts, tools=None):
+            items = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]} for t in texts]
+            return json.dumps({"model": "m", "prompt_cache_key": "conv-1", "input": items, "tools": tools or []}).encode()
+
+        tools = [{"type": "namespace", "name": "mcp__chrome_devtools", "tools": [{"type": "function", "name": "click"}]}]
+        first = reqlog.describe_request(body(["a", "b"], tools), {})
+        self.assertIsNone(first["diverge"])
+        self.assertIn("mcp__chrome_devtools", first["tools_bytes"])
+        same_prefix = reqlog.describe_request(body(["a", "b", "c"], tools), {})
+        self.assertIsNone(same_prefix["diverge"])
+        changed = reqlog.describe_request(body(["a", "B", "c"], tools), {})
+        self.assertEqual(changed["diverge"]["item_index"], 1)
+        tail = b'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":8},"output_tokens":3}}}\n\n'
+        self.assertEqual(reqlog.extract_usage(tail)["input_tokens_details"]["cached_tokens"], 8)
+
+
 class TestDeepSeekKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
