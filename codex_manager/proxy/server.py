@@ -7,10 +7,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Set
 
 import httpx
 import uvicorn
@@ -156,6 +157,42 @@ DELEGATION_STREAM_REPLACEMENTS = [
 ]
 
 
+_MCP_FLAT_NAME_RE = re.compile(rb'"name":(\s*)"(mcp__[A-Za-z0-9_-]+?)__([A-Za-z0-9_.-]+)"')
+
+
+def _mcp_namespaces(body: bytes) -> Set[str]:
+    """Namespaces offered to the model in this request (MCP servers appear as {"type": "namespace", "name": "mcp__x"})."""
+    try:
+        tools = json.loads(body.decode("utf-8")).get("tools") or []
+    except Exception:
+        return set()
+    return {
+        t["name"]
+        for t in tools
+        if isinstance(t, dict) and t.get("type") == "namespace" and str(t.get("name", "")).startswith("mcp__")
+    }
+
+
+def split_flat_mcp_tool_names(buf: bytes, namespaces: Set[str]) -> bytes:
+    """
+    DeepSeek sometimes calls an MCP tool by its flattened name ("mcp__linear__get_issue") instead of
+    name + namespace, which Codex rejects as "unsupported call". Split it for every known namespace.
+    """
+    if not namespaces:
+        return buf
+
+    def fix(m: "re.Match[bytes]") -> bytes:
+        flat = (m.group(2) + b"__" + m.group(3)).decode("utf-8", "replace")
+        # Longest namespace wins (e.g. mcp__codex_app over mcp__codex)
+        for ns in sorted(namespaces, key=len, reverse=True):
+            if flat.startswith(ns + "__") and len(flat) > len(ns) + 2:
+                sp = m.group(1)
+                return b'"name":' + sp + json.dumps(flat[len(ns) + 2 :]).encode() + b"," + sp + b'"namespace":' + sp + json.dumps(ns).encode()
+        return m.group(0)
+
+    return _MCP_FLAT_NAME_RE.sub(fix, buf)
+
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"])
 async def proxy_all(request: Request, background_tasks: BackgroundTasks):
     full_path = "/" + request.path_params.get("path", "")
@@ -164,8 +201,10 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
     # Intercept and adapt POST /responses
     is_responses_api = request.method == "POST" and "responses" in full_path
     replacements = []
+    mcp_namespaces: Set[str] = set()
     if is_responses_api:
         req_body = adapt_responses_body(req_body)
+        mcp_namespaces = _mcp_namespaces(req_body)
         oai_to_ds, _ = get_active_session_mappings()
         replacements = [(oai.encode("utf-8"), ds.encode("utf-8")) for oai, ds in oai_to_ds.items()]
         replacements.extend(DELEGATION_STREAM_REPLACEMENTS)
@@ -208,12 +247,14 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
         async def stream_generator():
             try:
                 buffer = b""
-                overlap = 80
+                # Must exceed the longest pattern so a match split across chunks is completed before it is emitted
+                overlap = 512
                 async for chunk in resp.aiter_bytes():
                     if replacements:
                         buffer += chunk
                         for oai_b, ds_b in replacements:
                             buffer = buffer.replace(oai_b, ds_b)
+                        buffer = split_flat_mcp_tool_names(buffer, mcp_namespaces)
                         if len(buffer) > overlap:
                             to_yield = buffer[:-overlap]
                             buffer = buffer[-overlap:]
@@ -224,6 +265,7 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
                     if replacements:
                         for oai_b, ds_b in replacements:
                             buffer = buffer.replace(oai_b, ds_b)
+                        buffer = split_flat_mcp_tool_names(buffer, mcp_namespaces)
                     yield buffer
             finally:
                 await resp.aclose()

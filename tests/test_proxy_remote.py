@@ -27,6 +27,39 @@ class TestRequestBodyDecoding(unittest.TestCase):
         self.assertEqual(server._decode_request_body(self.BODY, "identity"), self.BODY)
 
 
+class TestFlatMcpToolNames(unittest.TestCase):
+    NS = {"mcp__linear", "mcp__codex_app", "mcp__codex"}
+
+    def test_flat_name_split(self):
+        buf = b'data: {"item":{"type":"function_call","name":"mcp__linear__get_issue","arguments":"{}"}}'
+        self.assertEqual(
+            server.split_flat_mcp_tool_names(buf, self.NS),
+            b'data: {"item":{"type":"function_call","name":"get_issue","namespace":"mcp__linear","arguments":"{}"}}',
+        )
+
+    def test_spaced_json_and_longest_namespace(self):
+        buf = b'{"name": "mcp__codex_app__read_thread"}'
+        self.assertEqual(
+            server.split_flat_mcp_tool_names(buf, self.NS),
+            b'{"name": "read_thread", "namespace": "mcp__codex_app"}',
+        )
+
+    def test_unknown_or_already_split_untouched(self):
+        for buf in (
+            b'{"name":"mcp__unknown__tool"}',
+            b'{"name":"get_issue","namespace":"mcp__linear"}',
+            b'{"name":"mcp__linear"}',
+            b'{"arguments":"{\\"name\\":\\"mcp__linear__get_issue\\"}"}',
+        ):
+            self.assertEqual(server.split_flat_mcp_tool_names(buf, self.NS), buf)
+
+    def test_namespaces_from_request(self):
+        body = json.dumps(
+            {"tools": [{"type": "namespace", "name": "mcp__linear", "tools": []}, {"type": "function", "name": "exec_command"}]}
+        ).encode()
+        self.assertEqual(server._mcp_namespaces(body), {"mcp__linear"})
+
+
 class TestDeepSeekKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
