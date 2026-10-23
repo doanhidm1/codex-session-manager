@@ -133,6 +133,21 @@ class TestRequestLog(unittest.TestCase):
         self.assertEqual(reqlog.extract_usage(tail)["input_tokens_details"]["cached_tokens"], 8)
 
 
+class TestEffortPreserved(unittest.TestCase):
+    def test_tool_step_keeps_user_effort(self):
+        from codex_manager.proxy.adapter import adapt_responses_body
+
+        items = [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]},
+            {"type": "function_call", "call_id": "c", "name": "exec_command", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c", "output": "ok"},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            body = json.dumps({"model": "deepseek-flash", "input": items, "reasoning": {"effort": "max"}}).encode()
+            out = json.loads(adapt_responses_body(body, mapping_db_path=os.path.join(d, "none.sqlite")))
+        self.assertEqual(out["reasoning"]["effort"], "max")
+
+
 class TestDeepSeekKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

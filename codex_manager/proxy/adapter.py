@@ -390,7 +390,9 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
     # 6. Dynamic Reasoning Effort Adaptation:
     # - If intermediate tool step: enforce 'low' reasoning effort to prevent wasting token budget.
     # - If direct user chat: preserve user-selected effort as-is (Codex UI natively offers low, medium, high).
-    if is_tool_followup_turn(new_input):
+    # Off by default: it silently overrode the effort the user picked (e.g. max) on every tool step.
+    # Opt in with DEEPSEEK_PROXY_LOW_EFFORT_TOOL_STEPS=1.
+    if os.environ.get("DEEPSEEK_PROXY_LOW_EFFORT_TOOL_STEPS") == "1" and is_tool_followup_turn(new_input):
         target_effort = "low"
         if "reasoning" in data and isinstance(data["reasoning"], dict):
             if data["reasoning"].get("effort") != target_effort:
