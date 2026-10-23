@@ -83,34 +83,6 @@ def get_active_session_mappings(
         return {}, []
 
 
-def is_tool_followup_turn(input_items: List[Dict[str, Any]]) -> bool:
-    """
-    Checks if the last action in the conversation history is a tool execution result,
-    meaning the model is currently running inside an autonomous tool execution loop.
-    """
-    if not input_items:
-        return False
-    for item in reversed(input_items):
-        if not isinstance(item, dict):
-            continue
-        itype = item.get("type")
-        if itype in ("function_call_output", "custom_tool_call_output"):
-            return True
-        if itype == "message":
-            if item.get("role") == "tool":
-                return True
-            content = item.get("content", [])
-            for c in content:
-                if isinstance(c, dict) and "text" in c:
-                    t = str(c["text"]).strip()
-                    if t.startswith("{") and ("exit_code" in t or "output" in t or "result" in t):
-                        return True
-            return False
-        if itype in ("function_call", "custom_tool_call"):
-            return True
-    return False
-
-
 _CALL_TYPES = ("function_call", "custom_tool_call")
 _OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
 
@@ -387,28 +359,8 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
     if strip_images(new_input):
         adapted = True
 
-    # 6. Dynamic Reasoning Effort Adaptation:
-    # - If intermediate tool step: enforce 'low' reasoning effort to prevent wasting token budget.
-    # - If direct user chat: preserve user-selected effort as-is (Codex UI natively offers low, medium, high).
-    # Turns that answer the user keep the selected effort; set DEEPSEEK_PROXY_LOW_EFFORT_TOOL_STEPS=0 to disable.
-    if os.environ.get("DEEPSEEK_PROXY_LOW_EFFORT_TOOL_STEPS", "1") != "0" and is_tool_followup_turn(new_input):
-        target_effort = "low"
-        if "reasoning" in data and isinstance(data["reasoning"], dict):
-            if data["reasoning"].get("effort") != target_effort:
-                data["reasoning"]["effort"] = target_effort
-                adapted = True
-        elif "reasoning_effort" in data:
-            if data["reasoning_effort"] != target_effort:
-                data["reasoning_effort"] = target_effort
-                adapted = True
-        elif "output_config" in data and isinstance(data["output_config"], dict):
-            if data["output_config"].get("effort") != target_effort:
-                data["output_config"]["effort"] = target_effort
-                adapted = True
-        else:
-            data["reasoning"] = {"effort": target_effort}
-            adapted = True
-        logger.debug("Dynamic Reasoning: Enforced 'low' effort for tool-calling loop turn.")
+    # 6. Reasoning effort is passed through unchanged: DeepSeek renders it into the prompt, so changing it
+    # between requests of one thread splits the prefix cache (measured: a switch re-bills nearly the whole context).
 
     if adapted:
         data["input"] = new_input

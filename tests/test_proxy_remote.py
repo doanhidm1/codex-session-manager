@@ -134,7 +134,7 @@ class TestRequestLog(unittest.TestCase):
 
 
 class TestToolStepEffort(unittest.TestCase):
-    def test_tool_step_uses_low_effort(self):
+    def test_tool_step_keeps_user_effort(self):
         from codex_manager.proxy.adapter import adapt_responses_body
 
         items = [
@@ -145,7 +145,7 @@ class TestToolStepEffort(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             body = json.dumps({"model": "deepseek-flash", "input": items, "reasoning": {"effort": "max"}}).encode()
             out = json.loads(adapt_responses_body(body, mapping_db_path=os.path.join(d, "none.sqlite")))
-        self.assertEqual(out["reasoning"]["effort"], "low")
+        self.assertEqual(out["reasoning"]["effort"], "max")
 
 
 class TestDeepSeekKey(unittest.TestCase):
