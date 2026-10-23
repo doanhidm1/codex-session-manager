@@ -82,6 +82,37 @@ class TestToolOutputAdjacency(unittest.TestCase):
         self.assertIs(keep_tool_outputs_adjacent(unanswered), unanswered)
 
 
+class TestPromptCacheStability(unittest.TestCase):
+    @staticmethod
+    def _adapt(items):
+        from codex_manager.proxy.adapter import adapt_responses_body
+
+        with tempfile.TemporaryDirectory() as d:
+            body = json.dumps({"model": "deepseek-flash", "input": items}).encode()
+            return json.loads(adapt_responses_body(body, mapping_db_path=os.path.join(d, "none.sqlite")))["input"]
+
+    def test_earlier_items_unchanged_when_a_new_user_message_arrives(self):
+        def user(t):
+            return {"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]}
+
+        call = {"type": "function_call", "call_id": "c", "name": "exec_command", "arguments": "{}"}
+        out = {"type": "function_call_output", "call_id": "c", "output": "ok"}
+        first = self._adapt([user("a"), call, out])
+        second = self._adapt([user("a"), call, out, user("b")])
+        self.assertEqual(second[: len(first)], first)
+
+    def test_images_replaced_with_text(self):
+        from codex_manager.proxy.adapter import IMAGE_PLACEHOLDER
+
+        img = {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+        call = {"type": "function_call", "call_id": "v", "name": "view_image", "arguments": "{}"}
+        out = {"type": "function_call_output", "call_id": "v", "output": [img]}
+        msg = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "see"}, dict(img)]}
+        res = self._adapt([msg, call, out])
+        self.assertNotIn("base64", json.dumps(res))
+        self.assertIn(IMAGE_PLACEHOLDER, json.dumps(res))
+
+
 class TestDeepSeekKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

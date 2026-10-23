@@ -149,6 +149,39 @@ def keep_tool_outputs_adjacent(items: List[Any]) -> List[Any]:
     return items if out == items else out
 
 
+IMAGE_PLACEHOLDER = (
+    "[image omitted: this model is text-only and cannot see images. Use text tools instead, "
+    "e.g. chrome take_snapshot / evaluate_script, or read the file contents.]"
+)
+
+
+def strip_images(items: List[Any]) -> bool:
+    """Replace input_image parts (in messages and tool outputs) with a text placeholder. Returns True if changed."""
+    changed = False
+
+    def clean(parts: Any) -> Any:
+        nonlocal changed
+        if not isinstance(parts, list):
+            return parts
+        out = []
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") == "input_image":
+                out.append({"type": "input_text", "text": IMAGE_PLACEHOLDER})
+                changed = True
+            else:
+                out.append(part)
+        return out
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") == "message":
+            it["content"] = clean(it.get("content"))
+        elif it.get("type") in _OUTPUT_TYPES:
+            it["output"] = clean(it.get("output"))
+    return changed
+
+
 def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = None) -> bytes:
     """
     Inspects and adapts the JSON body for DeepSeek Responses API.
@@ -336,16 +369,23 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
         )
         adapted = True
 
-    # 5. Append reminder to the last user message
-    for item in reversed(new_input):
+    # 5. Append the reminder to every user message. Adding it only to the latest one moved it on each new user
+    # message, changing an earlier part of the prompt and invalidating DeepSeek's prefix cache from that point on.
+    for item in new_input:
         if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user":
             content = item.get("content")
             if isinstance(content, list) and len(content) > 0:
                 last_block = content[-1]
-                if isinstance(last_block, dict) and "text" in last_block:
+                if isinstance(last_block, dict) and "text" in last_block and not str(last_block["text"]).endswith(
+                    USER_TOOL_REMINDER
+                ):
                     last_block["text"] += USER_TOOL_REMINDER
                     adapted = True
-                    break
+
+    # 5.5 DeepSeek is text-only: images are dropped upstream (not billed, never seen by the model) but each one is
+    # still uploaded as base64 on every request. Replace them with a short note so the model knows to use text tools.
+    if strip_images(new_input):
+        adapted = True
 
     # 6. Dynamic Reasoning Effort Adaptation:
     # - If intermediate tool step: enforce 'low' reasoning effort to prevent wasting token budget.
