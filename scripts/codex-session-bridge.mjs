@@ -3,7 +3,10 @@
  * codex-session-bridge.mjs
  * 
  * Strict live MCP server for Codex inter-session steering and delegation.
- * Connects 100% directly to Codex app-server WebSocket (ws://127.0.0.1:45000).
+ * Dynamically connects directly to the live Codex app-server via:
+ * 1. Unix Domain Socket (~/.codex/app-server-control/app-server-control.sock)
+ * 2. Codex app-server proxy stdio bridge (`codex app-server proxy`)
+ * 3. TCP WebSocket (ws://127.0.0.1:45000 or CODEX_APP_SERVER_WS)
  * 
  * NO FALLBACK: Never falls back to passive CLI queue or stale SQLite cache.
  * All commands run strictly against the live session engine or fail fast with
@@ -11,19 +14,253 @@
  */
 
 import readline from 'node:readline';
-
-const WS_URL = process.env.CODEX_APP_SERVER_WS || 'ws://127.0.0.1:45000';
+import net from 'node:net';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 
 function logErr(...args) {
   process.stderr.write(`[codex-session-bridge] ${args.join(' ')}\n`);
 }
 
 // ---------------------------------------------------------------------------
-// 1. Direct WebSocket Client for Codex app-server
+// 1. Pure Node Stream-based WebSocket Client
+// ---------------------------------------------------------------------------
+class StreamWebSocket extends EventEmitter {
+  constructor() {
+    super();
+    this.stream = null;
+    this.childProc = null;
+    this.upgraded = false;
+    this.incomingBuffer = Buffer.alloc(0);
+    this.connected = false;
+    this.transportInfo = '';
+  }
+
+  async connect() {
+    if (this.connected) return;
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const onSuccess = () => {
+        if (settled) return;
+        settled = true;
+        this.connected = true;
+        this.emit('open');
+        resolve();
+      };
+      const onFail = (err) => {
+        if (settled) return;
+        settled = true;
+        this.cleanup();
+        reject(err);
+      };
+
+      try {
+        const stream = this._createStream();
+        this.stream = stream;
+
+        const timeout = setTimeout(() => {
+          onFail(new Error(`Connection to Codex app-server (${this.transportInfo}) timed out after 5s`));
+        }, 5000);
+
+        const key = crypto.randomBytes(16).toString('base64');
+        const handshake = 
+          `GET / HTTP/1.1\r\n` +
+          `Host: localhost\r\n` +
+          `Upgrade: websocket\r\n` +
+          `Connection: Upgrade\r\n` +
+          `Sec-WebSocket-Key: ${key}\r\n` +
+          `Sec-WebSocket-Version: 13\r\n\r\n`;
+
+        stream.write(Buffer.from(handshake, 'utf8'));
+
+        stream.on('data', (chunk) => {
+          this.incomingBuffer = Buffer.concat([this.incomingBuffer, chunk]);
+          if (!this.upgraded) {
+            const idx = this.incomingBuffer.indexOf('\r\n\r\n');
+            if (idx !== -1) {
+              const header = this.incomingBuffer.subarray(0, idx).toString('utf8');
+              if (!header.includes('101 Switching Protocols')) {
+                clearTimeout(timeout);
+                onFail(new Error(`WebSocket handshake rejected: ${header.split('\r\n')[0]}`));
+                return;
+              }
+              this.upgraded = true;
+              this.incomingBuffer = this.incomingBuffer.subarray(idx + 4);
+              clearTimeout(timeout);
+              onSuccess();
+            }
+          }
+
+          if (this.upgraded) {
+            this._parseFrames();
+          }
+        });
+
+        stream.on('error', (err) => {
+          this.emit('error', err);
+          onFail(err);
+        });
+
+        stream.on('close', () => {
+          this.cleanup();
+          this.emit('close');
+        });
+
+        stream.on('end', () => {
+          this.cleanup();
+          this.emit('close');
+        });
+      } catch (err) {
+        onFail(err);
+      }
+    });
+  }
+
+  _createStream() {
+    // 1. Explicit WS TCP if configured
+    if (process.env.CODEX_APP_SERVER_WS) {
+      try {
+        const parsed = new URL(process.env.CODEX_APP_SERVER_WS);
+        const host = parsed.hostname || '127.0.0.1';
+        const port = parseInt(parsed.port || '45000', 10);
+        this.transportInfo = `tcp://${host}:${port}`;
+        return net.createConnection({ host, port });
+      } catch {}
+    }
+
+    // 2. UNIX domain socket (default daemon control socket on Linux/macOS)
+    const defaultSock = path.join(os.homedir(), '.codex', 'app-server-control', 'app-server-control.sock');
+    const sockPath = process.env.CODEX_APP_SERVER_SOCK || defaultSock;
+    if (fs.existsSync(sockPath)) {
+      this.transportInfo = `unix://${sockPath}`;
+      return net.createConnection(sockPath);
+    }
+
+    // 3. Fallback: codex app-server proxy stdio bridge
+    this.transportInfo = 'codex app-server proxy';
+    const child = spawn('codex', ['app-server', 'proxy'], {
+      stdio: ['pipe', 'pipe', 'ignore']
+    });
+    this.childProc = child;
+
+    child.on('error', (err) => {
+      this.emit('error', err);
+    });
+
+    const duplex = {
+      write: (data) => child.stdin.write(data),
+      on: (event, handler) => {
+        if (event === 'data') child.stdout.on('data', handler);
+        else if (event === 'error') child.on('error', handler);
+        else if (event === 'close' || event === 'end') child.stdout.on(event, handler);
+      },
+      end: () => child.stdin.end(),
+      destroy: () => child.kill()
+    };
+    return duplex;
+  }
+
+  _parseFrames() {
+    while (this.incomingBuffer.length >= 2) {
+      const b0 = this.incomingBuffer[0];
+      const b1 = this.incomingBuffer[1];
+      const opcode = b0 & 0x0f;
+      let len = b1 & 0x7f;
+      let offset = 2;
+
+      if (len === 126) {
+        if (this.incomingBuffer.length < 4) break;
+        len = this.incomingBuffer.readUInt16BE(2);
+        offset = 4;
+      } else if (len === 127) {
+        if (this.incomingBuffer.length < 10) break;
+        len = Number(this.incomingBuffer.readBigUInt64BE(2));
+        offset = 10;
+      }
+
+      if (this.incomingBuffer.length < offset + len) break;
+
+      const payload = this.incomingBuffer.subarray(offset, offset + len);
+      this.incomingBuffer = this.incomingBuffer.subarray(offset + len);
+
+      if (opcode === 0x1) { // Text frame
+        this.emit('message', payload.toString('utf8'));
+      } else if (opcode === 0x9) { // Ping
+        this._sendFrame(payload, 0xa); // Send Pong
+      } else if (opcode === 0x8) { // Close
+        this.cleanup();
+        this.emit('close');
+        break;
+      }
+    }
+  }
+
+  send(text) {
+    if (!this.connected || !this.stream) {
+      throw new Error('Not connected to Codex app-server');
+    }
+    const payload = Buffer.from(text, 'utf8');
+    this._sendFrame(payload, 0x1);
+  }
+
+  _sendFrame(payload, opcode) {
+    const mask = crypto.randomBytes(4);
+    let header;
+    let offset = 2;
+
+    if (payload.length < 126) {
+      header = Buffer.alloc(6);
+      header[0] = 0x80 | opcode;
+      header[1] = 0x80 | payload.length;
+    } else if (payload.length < 65536) {
+      header = Buffer.alloc(8);
+      header[0] = 0x80 | opcode;
+      header[1] = 0x80 | 126;
+      header.writeUInt16BE(payload.length, 2);
+      offset = 4;
+    } else {
+      header = Buffer.alloc(14);
+      header[0] = 0x80 | opcode;
+      header[1] = 0x80 | 127;
+      header.writeBigUInt64BE(BigInt(payload.length), 2);
+      offset = 10;
+    }
+
+    mask.copy(header, offset);
+
+    const maskedPayload = Buffer.alloc(payload.length);
+    for (let i = 0; i < payload.length; i++) {
+      maskedPayload[i] = payload[i] ^ mask[i % 4];
+    }
+
+    this.stream.write(Buffer.concat([header, maskedPayload]));
+  }
+
+  cleanup() {
+    this.connected = false;
+    this.upgraded = false;
+    this.incomingBuffer = Buffer.alloc(0);
+    if (this.stream) {
+      try { this.stream.destroy?.(); } catch {}
+      this.stream = null;
+    }
+    if (this.childProc) {
+      try { this.childProc.kill(); } catch {}
+      this.childProc = null;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Direct Live Client for Codex app-server
 // ---------------------------------------------------------------------------
 class CodexAppServerClient {
-  constructor(url = WS_URL) {
-    this.url = url;
+  constructor() {
     this.ws = null;
     this.nextId = 1;
     this.pending = new Map();
@@ -31,71 +268,62 @@ class CodexAppServerClient {
   }
 
   async connect() {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.ws && this.ws.connected) return;
 
-    return new Promise((resolve, reject) => {
+    const ws = new StreamWebSocket();
+    await ws.connect();
+    this.ws = ws;
+
+    ws.on('message', (data) => {
       try {
-        const ws = new WebSocket(this.url);
-        const timeout = setTimeout(() => {
-          try { ws.close(); } catch {}
-          reject(new Error(`Cannot connect to Codex app-server at ${this.url}. Please ensure Codex was started with remote.bat (--listen ws://127.0.0.1:45000).`));
-        }, 3000);
-
-        ws.onopen = async () => {
-          clearTimeout(timeout);
-          this.ws = ws;
-          try {
-            await this.request('initialize', {
-              clientInfo: { name: 'codex-session-bridge', title: 'Codex Session Bridge', version: '1.0.0' },
-              capabilities: null
-            });
-            resolve();
-          } catch (e) {
-            reject(new Error(`Failed to initialize session with app-server: ${e.message}`));
+        const msg = JSON.parse(data);
+        if (msg.id !== undefined && this.pending.has(msg.id)) {
+          const { resolve: res, reject: rej } = this.pending.get(msg.id);
+          this.pending.delete(msg.id);
+          if (msg.error) rej(new Error(msg.error.message || JSON.stringify(msg.error)));
+          else res(msg.result);
+        } else if (msg.method) {
+          if (msg.method === 'turn/started' && msg.params?.threadId && msg.params?.turn?.id) {
+            this.activeTurnsByThread.set(msg.params.threadId, msg.params.turn.id);
+          } else if (msg.method === 'turn/ended' && msg.params?.threadId) {
+            this.activeTurnsByThread.delete(msg.params.threadId);
           }
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.id !== undefined && this.pending.has(msg.id)) {
-              const { resolve: res, reject: rej } = this.pending.get(msg.id);
-              this.pending.delete(msg.id);
-              if (msg.error) rej(new Error(msg.error.message || JSON.stringify(msg.error)));
-              else res(msg.result);
-            } else if (msg.method) {
-              if (msg.method === 'turn/started' && msg.params?.threadId && msg.params?.turn?.id) {
-                this.activeTurnsByThread.set(msg.params.threadId, msg.params.turn.id);
-              } else if (msg.method === 'turn/ended' && msg.params?.threadId) {
-                this.activeTurnsByThread.delete(msg.params.threadId);
-              }
-            }
-          } catch (e) {
-            logErr('Message parse error:', e.message);
-          }
-        };
-
-        ws.onerror = (e) => {
-          clearTimeout(timeout);
-          reject(new Error(`WebSocket connection error to ${this.url}: ${e.message || 'connection failed'}`));
-        };
-
-        ws.onclose = () => {
-          this.ws = null;
-          for (const [, { reject: rej }] of this.pending) {
-            rej(new Error('WebSocket connection closed by Codex app-server'));
-          }
-          this.pending.clear();
-        };
-      } catch (err) {
-        reject(err);
+        }
+      } catch (e) {
+        logErr('Message parse error:', e.message);
       }
     });
+
+    ws.on('close', () => {
+      for (const [, { reject: rej }] of this.pending) {
+        rej(new Error('WebSocket connection closed by Codex app-server'));
+      }
+      this.pending.clear();
+      this.ws = null;
+    });
+
+    ws.on('error', (e) => {
+      logErr('Transport error:', e.message);
+    });
+
+    // Initialize session with app-server
+    try {
+      await this.request('initialize', {
+        clientInfo: { name: 'codex-session-bridge', title: 'Codex Session Bridge', version: '1.0.0' },
+        capabilities: null
+      });
+      this.ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }));
+      logErr(`Connected to live Codex engine via ${ws.transportInfo}`);
+    } catch (e) {
+      this.ws.cleanup();
+      this.ws = null;
+      throw new Error(`Failed to initialize session with app-server: ${e.message}`);
+    }
   }
 
   request(method, params = {}) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error(`Not connected to Codex app-server at ${this.url}`);
+    if (!this.ws || !this.ws.connected) {
+      throw new Error('Not connected to Codex app-server');
     }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
@@ -119,50 +347,124 @@ class CodexAppServerClient {
     return res?.data || res?.threads || [];
   }
 
-  async readThread(threadId, includeTurns = true) {
+  async readThread(threadId) {
     await this.connect();
-    const res = await this.request('thread/read', { threadId, includeTurns });
+    const res = await this.request('thread/read', { threadId });
     return res?.thread || res;
+  }
+
+  async listThreadItems(threadId, limit = 20, sortDirection = 'desc') {
+    await this.connect();
+    try {
+      const res = await this.request('thread/items/list', { threadId, limit, sortDirection });
+      return res?.data || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async resumeThread(threadId) {
+    await this.connect();
+    try {
+      const res = await this.request('thread/resume', { threadId, excludeTurns: true });
+      return res?.thread || res;
+    } catch (err) {
+      logErr(`resumeThread error for ${threadId}:`, err.message);
+      return null;
+    }
+  }
+
+  async ensureThreadLoaded(threadId) {
+    try {
+      const thread = await this.readThread(threadId);
+      if (!thread || thread.status?.type === 'notLoaded' || thread.canAcceptDirectInput === false || thread.canAcceptDirectInput === null) {
+        logErr(`Thread ${threadId} is notLoaded, resuming via thread/resume...`);
+        await this.resumeThread(threadId);
+      }
+    } catch (e) {
+      logErr(`ensureThreadLoaded check failed (${e.message}), attempting resume...`);
+      await this.resumeThread(threadId);
+    }
   }
 
   async startTurn(threadId, text, turnTrigger = 'user') {
     await this.connect();
-    return await this.request('turn/start', {
-      threadId,
-      input: [{ type: 'text', text }],
-      turnTrigger
-    });
+    try {
+      const res = await this.request('turn/start', {
+        threadId,
+        input: [{ type: 'text', text, text_elements: [] }],
+        turnTrigger
+      });
+      const turnId = res?.turn?.id || res?.id;
+      if (turnId) {
+        this.activeTurnsByThread.set(threadId, turnId);
+      }
+      return res;
+    } catch (err) {
+      const msg = err.message || '';
+      if (msg.includes('not found') || msg.includes('not loaded') || msg.includes('notLoaded')) {
+        logErr(`startTurn failed with '${msg}', resuming thread ${threadId} and retrying...`);
+        await this.resumeThread(threadId);
+        const retryRes = await this.request('turn/start', {
+          threadId,
+          input: [{ type: 'text', text, text_elements: [] }],
+          turnTrigger
+        });
+        const turnId = retryRes?.turn?.id || retryRes?.id;
+        if (turnId) {
+          this.activeTurnsByThread.set(threadId, turnId);
+        }
+        return retryRes;
+      }
+      throw err;
+    }
   }
 
   async steerTurn(threadId, expectedTurnId, text) {
     await this.connect();
-    return await this.request('turn/steer', {
+    const res = await this.request('turn/steer', {
       threadId,
       expectedTurnId,
-      input: [{ type: 'text', text }]
+      input: [{ type: 'text', text, text_elements: [] }]
     });
+    return res;
   }
 
   async interruptTurn(threadId, turnId = null) {
     await this.connect();
-    return await this.request('turn/interrupt', { threadId, turnId });
+    let targetTurnId = turnId;
+    if (!targetTurnId) {
+      targetTurnId = this.activeTurnsByThread.get(threadId);
+      if (!targetTurnId) {
+        const items = await this.listThreadItems(threadId, 5);
+        if (items.length > 0) {
+          targetTurnId = items[items.length - 1]?.turnId;
+        }
+      }
+    }
+    if (!targetTurnId) {
+      throw new Error(`Cannot interrupt thread ${threadId}: No active turn found to interrupt.`);
+    }
+    const res = await this.request('turn/interrupt', { threadId, turnId: targetTurnId });
+    this.activeTurnsByThread.delete(threadId);
+    return res;
   }
 
   async createThread(model = null, prompt = null) {
     await this.connect();
-    const res = await this.request('thread/start', { model });
-    const threadId = res?.threadId || res?.id || res?.data?.id;
+    const res = await this.request('thread/start', model ? { model } : {});
+    const threadId = res?.thread?.id || res?.threadId || res?.id || res?.data?.id;
     if (threadId && prompt) {
       await this.startTurn(threadId, prompt);
     }
-    return res;
+    return { ...res, threadId };
   }
 }
 
 const client = new CodexAppServerClient();
 
 // ---------------------------------------------------------------------------
-// 2. Thread ID Resolution (Live Only)
+// 3. Thread ID Resolution (Live Only)
 // ---------------------------------------------------------------------------
 async function resolveLiveThreadId(input) {
   if (!input) throw new Error('Must provide a threadId or search query');
@@ -185,7 +487,7 @@ async function resolveLiveThreadId(input) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Tool Handlers (Strict Live Operations)
+// 4. Tool Handlers (Strict Live Operations)
 // ---------------------------------------------------------------------------
 async function handleListThreads(args = {}) {
   const limit = typeof args.limit === 'number' ? args.limit : 15;
@@ -226,6 +528,58 @@ async function handleListThreads(args = {}) {
   };
 }
 
+function formatItem(itemEntry) {
+  const it = itemEntry.item || {};
+  const turnStr = itemEntry.turnId ? `\`${itemEntry.turnId.slice(0, 8)}...\`` : '';
+  const timeStr = itemEntry.startedAtMs ? new Date(itemEntry.startedAtMs).toLocaleTimeString('vi-VN') : '';
+  const headerTime = timeStr ? ` [${timeStr}]` : '';
+
+  if (it.type === 'userMessage') {
+    let text = '';
+    if (typeof it.content === 'string') text = it.content;
+    else if (Array.isArray(it.content)) {
+      text = it.content.map(c => {
+        if (typeof c === 'string') return c;
+        if (c && typeof c === 'object') return c.text || c.content || '';
+        return '';
+      }).filter(Boolean).join('\n');
+    } else if (it.text) {
+      text = it.text;
+    }
+    return `### 👤 User ${turnStr}${headerTime}\n${text.trim()}`;
+  }
+
+  if (it.type === 'agentMessage') {
+    let text = it.text || '';
+    if (!text && Array.isArray(it.content)) {
+      text = it.content.map(c => (typeof c === 'string' ? c : c?.text || '')).filter(Boolean).join('\n');
+    }
+    return `### 🤖 Assistant ${turnStr}${headerTime}\n${text.trim()}`;
+  }
+
+  if (it.type === 'commandExecution') {
+    const cmd = it.command || '';
+    const exitStr = it.exitCode !== undefined && it.exitCode !== null ? ` (exit: ${it.exitCode})` : '';
+    const output = it.aggregatedOutput ? `\n> Output: ${it.aggregatedOutput.slice(-200).trim().replace(/\n/g, ' ')}` : '';
+    return `> ⚙️ \`[Command] ${cmd}\`${exitStr}${output}`;
+  }
+
+  if (it.type === 'mcpToolCall') {
+    const tool = it.tool || it.name || 'mcpTool';
+    return `> 🛠️ \`[MCP Tool] ${tool}\``;
+  }
+
+  if (it.type === 'reasoning') {
+    const summary = Array.isArray(it.summary) ? it.summary.join(' ') : (it.summary || '');
+    if (summary) {
+      return `> 💭 *[Reasoning]* ${summary.slice(0, 300)}...`;
+    }
+    return null;
+  }
+
+  return null;
+}
+
 async function handleSendMessage(args = {}) {
   const targetRaw = args.threadId || args.thread_id;
   const message = args.message || args.text || args.content;
@@ -237,16 +591,19 @@ async function handleSendMessage(args = {}) {
 
   const threadId = await resolveLiveThreadId(targetRaw);
 
-  // Inspect thread state from app-server
-  const threadData = await client.readThread(threadId, true);
-  const turns = threadData?.turns || [];
-  const inProgressTurn = turns.find(t => t.status === 'inProgress');
-  const activeTurnId = inProgressTurn?.id || client.activeTurnsByThread.get(threadId);
+  // Ensure thread is loaded into daemon memory
+  await client.ensureThreadLoaded(threadId);
+
+  let activeTurnId = client.activeTurnsByThread.get(threadId);
 
   // 1. Force STEER mode
   if (mode === 'steer') {
     if (!activeTurnId) {
-      throw new Error(`Cannot steer thread ${threadId}: No active turn is in progress (thread is idle). Use mode="start" or mode="auto" to start a new turn.`);
+      const recent = await client.listThreadItems(threadId, 3, 'desc');
+      activeTurnId = recent[0]?.turnId;
+    }
+    if (!activeTurnId) {
+      throw new Error(`Cannot steer thread ${threadId}: No active turn is known to be in progress. Use mode="start" or mode="auto" to start a new turn.`);
     }
     const steerRes = await client.steerTurn(threadId, activeTurnId, message);
     return {
@@ -264,41 +621,72 @@ async function handleSendMessage(args = {}) {
   // 2. Force START mode
   if (mode === 'start') {
     const startRes = await client.startTurn(threadId, message);
+    const turnId = startRes?.turn?.id || startRes?.id || 'started';
     return {
       content: [{
         type: 'text',
-        text: `🚀 [STARTED NEW TURN] Successfully triggered new turn on thread \`${threadId}\`:\n\n> ${message}`
+        text: `🚀 [STARTED NEW TURN] Successfully triggered new turn \`${turnId}\` on thread \`${threadId}\`:\n\n> ${message}`
       }],
       action: 'started_turn',
       threadId,
+      turnId,
       result: startRes
     };
   }
 
-  // 3. AUTO mode: Steer if active, start if idle
+  // 3. AUTO mode: Steer if active turn known, else start turn
   if (activeTurnId) {
-    const steerRes = await client.steerTurn(threadId, activeTurnId, message);
-    return {
-      content: [{
-        type: 'text',
-        text: `✅ [STEERED ACTIVE TURN] Thread \`${threadId}\` had turn \`${activeTurnId}\` in progress. Successfully steered turn:\n\n> ${message}`
-      }],
-      action: 'steered',
-      threadId,
-      turnId: activeTurnId,
-      result: steerRes
-    };
-  } else {
+    try {
+      const steerRes = await client.steerTurn(threadId, activeTurnId, message);
+      return {
+        content: [{
+          type: 'text',
+          text: `✅ [STEERED ACTIVE TURN] Thread \`${threadId}\` had turn \`${activeTurnId}\` in progress. Successfully steered turn:\n\n> ${message}`
+        }],
+        action: 'steered',
+        threadId,
+        turnId: activeTurnId,
+        result: steerRes
+      };
+    } catch (steerErr) {
+      logErr(`Auto-steer failed (${steerErr.message}), falling back to startTurn`);
+      client.activeTurnsByThread.delete(threadId);
+    }
+  }
+
+  try {
     const startRes = await client.startTurn(threadId, message);
+    const turnId = startRes?.turn?.id || startRes?.id || 'started';
     return {
       content: [{
         type: 'text',
-        text: `🚀 [STARTED NEW TURN] Thread \`${threadId}\` was idle. Successfully started new turn:\n\n> ${message}`
+        text: `🚀 [STARTED NEW TURN] Successfully started new turn \`${turnId}\` on thread \`${threadId}\`:\n\n> ${message}`
       }],
       action: 'started_turn',
       threadId,
+      turnId,
       result: startRes
     };
+  } catch (startErr) {
+    const errStr = startErr.message || '';
+    if (errStr.includes('active') || errStr.includes('running') || errStr.includes('conflict')) {
+      const recent = await client.listThreadItems(threadId, 3, 'desc');
+      const fallbackTurnId = recent[0]?.turnId;
+      if (fallbackTurnId) {
+        const steerRes = await client.steerTurn(threadId, fallbackTurnId, message);
+        return {
+          content: [{
+            type: 'text',
+            text: `✅ [STEERED ACTIVE TURN] Thread had active turn \`${fallbackTurnId}\`. Steered turn:\n\n> ${message}`
+          }],
+          action: 'steered',
+          threadId,
+          turnId: fallbackTurnId,
+          result: steerRes
+        };
+      }
+    }
+    throw startErr;
   }
 }
 
@@ -313,40 +701,37 @@ async function handleSteerThread(args = {}) {
 
 async function handleReadThread(args = {}) {
   const targetRaw = args.threadId || args.thread_id;
+  const limit = typeof args.limit === 'number' ? args.limit : 20;
   if (!targetRaw) throw new Error('Must provide threadId');
   const threadId = await resolveLiveThreadId(targetRaw);
 
-  const thread = await client.readThread(threadId, true);
-  const turns = thread?.turns || [];
-  const inProgressTurn = turns.find(t => t.status === 'inProgress');
+  const thread = await client.readThread(threadId);
+  const rawItems = await client.listThreadItems(threadId, limit, 'desc');
+  const items = rawItems.slice().reverse();
+
+  const isRunning = client.activeTurnsByThread.has(threadId) || thread?.status?.type === 'active';
+  const activeTurn = client.activeTurnsByThread.get(threadId);
 
   const summary = [
     `# Thread: ${thread.name || thread.preview || thread.id}`,
     `- **ID:** \`${thread.id}\``,
     `- **CWD:** \`${thread.cwd || 'default'}\``,
-    `- **Status:** ${inProgressTurn ? `🟢 In progress (Turn: \`${inProgressTurn.id}\`)` : '⚪ Idle'}`,
-    `- **Total Turns:** ${turns.length}`,
-    ``,
-    `## Recent Turns:`
+    `- **Status:** ${isRunning ? `🟢 In progress${activeTurn ? ` (Turn: \`${activeTurn}\`)` : ''}` : '⚪ Idle'}`,
+    `- **Model:** ${thread.model || 'default'} (${thread.modelProvider || 'openai'})`,
+    `- **Latest Activity (${items.length} items, chronological):**`,
+    ``
   ];
 
-  const recent = turns.slice(-5);
-  for (let i = 0; i < recent.length; i++) {
-    const t = recent[i];
-    summary.push(`### Turn ${turns.length - recent.length + i + 1} (\`${t.id}\` - Status: ${t.status})`);
-    if (t.error) {
-      summary.push(`⚠️ **Error:** ${t.error.message || JSON.stringify(t.error)}`);
-    }
-    if (Array.isArray(t.items)) {
-      for (const item of t.items) {
-        if (item.type === 'userMessage') {
-          summary.push(`**User:**\n${(item.content || item.text || '').slice(0, 1000)}`);
-        } else if (item.type === 'agentMessage') {
-          summary.push(`**Assistant:**\n${(item.content || item.text || '').slice(0, 1500)}`);
-        }
+  if (items.length > 0) {
+    for (const item of items) {
+      const formatted = formatItem(item);
+      if (formatted) {
+        summary.push(formatted);
+        summary.push('');
       }
     }
-    summary.push('');
+  } else {
+    summary.push('_No recent items found in this thread._');
   }
 
   return {
@@ -360,7 +745,7 @@ async function handleCreateThread(args = {}) {
   const model = args.model || null;
 
   const res = await client.createThread(model, prompt);
-  const threadId = res?.threadId || res?.id || res?.data?.id || 'created';
+  const threadId = res?.threadId || res?.thread?.id || res?.id || res?.data?.id || 'created';
 
   return {
     content: [{
@@ -382,7 +767,7 @@ async function handleInterruptThread(args = {}) {
   return {
     content: [{
       type: 'text',
-      text: `🛑 [INTERRUPTED] Successfully interrupted thread \`${threadId}\`${turnId ? ` (turn: ${turnId})` : ''}`
+      text: `🛑 [INTERRUPTED] Successfully interrupted thread \`${threadId}\``
     }],
     threadId,
     result: res
@@ -390,7 +775,7 @@ async function handleInterruptThread(args = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Tools Catalog for MCP
+// 5. Tools Catalog for MCP
 // ---------------------------------------------------------------------------
 const TOOLS = [
   {
@@ -503,7 +888,7 @@ const TOOLS = [
 ];
 
 // ---------------------------------------------------------------------------
-// 5. MCP stdio JSON-RPC Server
+// 6. MCP stdio JSON-RPC Server
 // ---------------------------------------------------------------------------
 function sendJsonRpc(msg) {
   process.stdout.write(JSON.stringify(msg) + '\n');
@@ -545,9 +930,9 @@ rl.on('line', async (line) => {
         capabilities: { tools: { listChanged: true } },
         serverInfo: {
           name: 'codex-session-bridge',
-          version: '1.0.0'
+          version: '1.1.0'
         },
-        instructions: 'Direct live Codex inter-session steering tools: steer active turns, send messages between threads, list threads, and delegate tasks via app-server WebSocket. No passive queuing.'
+        instructions: 'Direct live Codex inter-session steering tools: steer active turns, send messages between threads, list threads, and delegate tasks via app-server live connection. No passive queuing.'
       }
     });
     return;
@@ -615,4 +1000,4 @@ rl.on('line', async (line) => {
   });
 });
 
-logErr(`Ready (strict live mode, direct WebSocket target: ${WS_URL})`);
+logErr('Ready (strict live mode, multi-transport enabled)');
