@@ -265,6 +265,7 @@ class CodexAppServerClient {
     this.nextId = 1;
     this.pending = new Map();
     this.activeTurnsByThread = new Map();
+    this.lastResumeErrorByThread = new Map();
   }
 
   async connect() {
@@ -367,10 +368,12 @@ class CodexAppServerClient {
     await this.connect();
     try {
       const res = await this.request('thread/resume', { threadId, excludeTurns: true });
+      this.lastResumeErrorByThread.delete(threadId);
       return res?.thread || res;
     } catch (err) {
       logErr(`resumeThread error for ${threadId}:`, err.message);
-      return null;
+      this.lastResumeErrorByThread.set(threadId, err.message);
+      throw err;
     }
   }
 
@@ -382,8 +385,17 @@ class CodexAppServerClient {
         await this.resumeThread(threadId);
       }
     } catch (e) {
+      if (e.message && e.message.includes('already has an active writer')) {
+        throw new Error(`Thread \`${threadId}\` đang bị mở độc quyền bởi một cửa sổ/tab ChatGPT Desktop khác (active writer lock). Hãy tạm thời đổi sang tab khác hoặc đóng tab đó để thread nhận lệnh điều hướng.`);
+      }
       logErr(`ensureThreadLoaded check failed (${e.message}), attempting resume...`);
-      await this.resumeThread(threadId);
+      try {
+        await this.resumeThread(threadId);
+      } catch (resumeErr) {
+        if (resumeErr.message && resumeErr.message.includes('already has an active writer')) {
+          throw new Error(`Thread \`${threadId}\` đang bị mở độc quyền bởi một cửa sổ/tab ChatGPT Desktop khác (active writer lock). Hãy tạm thời đổi sang tab khác hoặc đóng tab đó để thread nhận lệnh điều hướng.`);
+        }
+      }
     }
   }
 
@@ -669,6 +681,12 @@ async function handleSendMessage(args = {}) {
     };
   } catch (startErr) {
     const errStr = startErr.message || '';
+    if (errStr.includes('thread not found') && client.lastResumeErrorByThread.has(threadId)) {
+      const resumeErr = client.lastResumeErrorByThread.get(threadId);
+      if (resumeErr && resumeErr.includes('already has an active writer')) {
+        throw new Error(`Thread \`${threadId}\` đang bị khóa độc quyền bởi một cửa sổ/tab ChatGPT Desktop khác (active writer lock). Hãy tạm thời đổi sang tab khác hoặc đóng tab đó để thread nhận lệnh điều hướng.`);
+      }
+    }
     if (errStr.includes('active') || errStr.includes('running') || errStr.includes('conflict')) {
       const recent = await client.listThreadItems(threadId, 3, 'desc');
       const fallbackTurnId = recent[0]?.turnId;
