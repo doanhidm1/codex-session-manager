@@ -36,6 +36,7 @@ class StreamWebSocket extends EventEmitter {
     this.childProc = null;
     this.upgraded = false;
     this.incomingBuffer = Buffer.alloc(0);
+    this.fragments = [];
     this.connected = false;
     this.transportInfo = '';
   }
@@ -169,6 +170,7 @@ class StreamWebSocket extends EventEmitter {
     while (this.incomingBuffer.length >= 2) {
       const b0 = this.incomingBuffer[0];
       const b1 = this.incomingBuffer[1];
+      const fin = (b0 & 0x80) !== 0;
       const opcode = b0 & 0x0f;
       let len = b1 & 0x7f;
       let offset = 2;
@@ -188,8 +190,13 @@ class StreamWebSocket extends EventEmitter {
       const payload = this.incomingBuffer.subarray(offset, offset + len);
       this.incomingBuffer = this.incomingBuffer.subarray(offset + len);
 
-      if (opcode === 0x1) { // Text frame
-        this.emit('message', payload.toString('utf8'));
+      if (opcode === 0x1 || opcode === 0x0) { // Text frame or continuation of a fragmented one
+        this.fragments.push(payload);
+        if (fin) {
+          const text = Buffer.concat(this.fragments).toString('utf8');
+          this.fragments = [];
+          this.emit('message', text);
+        }
       } else if (opcode === 0x9) { // Ping
         this._sendFrame(payload, 0xa); // Send Pong
       } else if (opcode === 0x8) { // Close
@@ -245,6 +252,7 @@ class StreamWebSocket extends EventEmitter {
     this.connected = false;
     this.upgraded = false;
     this.incomingBuffer = Buffer.alloc(0);
+    this.fragments = [];
     if (this.stream) {
       try { this.stream.destroy?.(); } catch {}
       this.stream = null;
@@ -286,7 +294,8 @@ class CodexAppServerClient {
         } else if (msg.method) {
           if (msg.method === 'turn/started' && msg.params?.threadId && msg.params?.turn?.id) {
             this.activeTurnsByThread.set(msg.params.threadId, msg.params.turn.id);
-          } else if (msg.method === 'turn/ended' && msg.params?.threadId) {
+          } else if (msg.method === 'turn/completed' && msg.params?.threadId) {
+            // app-server protocol has turn/completed (there is no turn/ended)
             this.activeTurnsByThread.delete(msg.params.threadId);
           }
         }
@@ -484,17 +493,23 @@ async function resolveLiveThreadId(input) {
   const uuidMatch = trimmed.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
   if (uuidMatch) return uuidMatch[1].toLowerCase();
 
-  // Search in live thread list
+  // Search in live thread list: exact ID or exact name first, then a unique partial name/title match.
+  // Never guess between several candidates — messaging the wrong session is worse than failing.
   const threads = await client.listThreads();
   const lower = trimmed.toLowerCase();
+  const label = (t) => (t.name || t.title || '').trim();
   for (const t of threads) {
     const id = t.id || t.threadId;
     if (id && id.toLowerCase() === lower) return id;
-    if (t.name && t.name.toLowerCase().includes(lower)) return id;
-    if (t.title && t.title.toLowerCase().includes(lower)) return id;
-    if (t.preview && t.preview.toLowerCase().includes(lower)) return id;
   }
-
+  const exact = threads.filter((t) => label(t).toLowerCase() === lower);
+  if (exact.length === 1) return exact[0].id || exact[0].threadId;
+  const partial = exact.length > 1 ? exact : threads.filter((t) => label(t).toLowerCase().includes(lower));
+  if (partial.length === 1) return partial[0].id || partial[0].threadId;
+  if (partial.length > 1) {
+    const list = partial.slice(0, 10).map((t) => `- ${label(t) || '(untitled)'}: ${t.id || t.threadId}`).join('\n');
+    throw new Error(`"${trimmed}" matches ${partial.length} threads; pass the thread ID instead:\n${list}`);
+  }
   return trimmed;
 }
 
@@ -863,6 +878,10 @@ const TOOLS = [
         threadId: {
           type: 'string',
           description: 'Codex thread UUID or title'
+        },
+        limit: {
+          type: 'number',
+          description: 'Number of recent items to return (default: 20)'
         }
       },
       required: ['threadId']
