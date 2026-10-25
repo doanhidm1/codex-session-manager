@@ -450,6 +450,14 @@ def restore_unarchived_rollouts(cur, codex_home):
     return moved
 
 
+def _wait_until_idle(codex_home, timeout_sec=45.0):
+    from .activity import detect_running_sessions
+
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline and detect_running_sessions(codex_home):
+        time.sleep(2)
+
+
 def _remote_daemon_running():
     from .apps import detect_codex_apps
 
@@ -519,6 +527,9 @@ def switch_provider(target_mode, codex_home, auto_sync=True, force=False, stop_a
             if stopped_units:
                 restart_remote_services(also_start=stopped_units)
             return False
+        if stopped_units:
+            # The stopped app-server wrote rollouts right before exiting; let the "recent write" check clear
+            _wait_until_idle(codex_home)
     ok = _switch_provider_impl(target_mode, codex_home, auto_sync=auto_sync, force=force)
     if mode in ("deepseek", "openai") and (ok or stopped_units):
         restart_remote_services(also_start=stopped_units)
