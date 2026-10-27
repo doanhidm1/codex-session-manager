@@ -177,10 +177,14 @@ class TestSwitchOpenAIBaseUrl(unittest.TestCase):
                 f.write('model = "gpt-x"\nmodel_provider = "openai"\n\n[model_providers.deepseek]\nname = "deepseek"\n')
             switch_provider_settings(home, "deepseek")
             with open(cfg) as f:
-                self.assertIn(f'openai_base_url = "{PROXY_BASE_URL}"', f.read())
+                text = f.read()
+            self.assertIn(f'openai_base_url = "{PROXY_BASE_URL}"', text)
+            self.assertIn("model_auto_compact_token_limit = 400000", text)
             switch_provider_settings(home, "openai")
             with open(cfg) as f:
-                self.assertNotIn("openai_base_url", f.read())
+                text = f.read()
+            self.assertNotIn("openai_base_url", text)
+            self.assertIn("model_auto_compact_token_limit = 900000", text)
 
 
 if __name__ == "__main__":

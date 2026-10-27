@@ -20,6 +20,10 @@ from .sync import sync_threads
 from .toml_utils import set_section_key, update_config_toml
 
 PROXY_BASE_URL = "http://127.0.0.1:8765/"
+# DeepSeek bills a cache miss on the whole context whenever a thread is reopened after the cache expired, and the
+# average context sits halfway between the post-compaction size (~50k) and this limit. 400k roughly halves that cost
+# while keeping the 1M window; OpenAI keeps the previous 900k.
+AUTO_COMPACT_TOKEN_LIMIT = {"deepseek": 400000, "openai": 900000}
 # Long-running daemons that read config.toml / thread state at start; they must be restarted after a switch
 REMOTE_SERVICES = ("codex-rc.service", "codex-session-bridge.service")
 
@@ -59,7 +63,7 @@ def switch_provider_settings(codex_home, target_provider):
         "model": target_model,
         "model_reasoning_effort": target_effort,
         "model_context_window": 1000000,
-        "model_auto_compact_token_limit": 900000,
+        "model_auto_compact_token_limit": AUTO_COMPACT_TOKEN_LIMIT.get(target_prov, 900000),
         "web_search": target_web_search,
         # Left behind by the DeepSeek one-click setup script; they force API-key login and break the OpenAI/ChatGPT mode
         "forced_login_method": None,
