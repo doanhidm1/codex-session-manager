@@ -272,7 +272,8 @@ def find_misdirected_automation_updates(response_tail: bytes, archived: Set[str]
         resp = evt.get("response") if isinstance(evt.get("response"), dict) else evt
         items.extend(o for o in (resp.get("output") or []) if isinstance(o, dict))
         for it in items:
-            if it.get("type") != "function_call" or it.get("name") != "automation_update":
+            # DeepSeek may emit the flattened name (mcp__codex_app__automation_update); the proxy splits it later
+            if it.get("type") != "function_call" or not str(it.get("name", "")).endswith("automation_update"):
                 continue
             try:
                 args = json.loads(it.get("arguments") or "{}")

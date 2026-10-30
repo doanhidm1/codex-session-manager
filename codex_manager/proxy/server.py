@@ -201,6 +201,17 @@ def split_flat_mcp_tool_names(buf: bytes, namespaces: Set[str]) -> bytes:
     return _MCP_FLAT_NAME_RE.sub(fix, buf)
 
 
+async def _retarget_later(fixes, own_thread_id: str) -> None:
+    # Let Codex apply the automation_update tool call first, then point the automation back at the calling thread
+    await asyncio.sleep(6.0)
+    for aid, bad in fixes.items():
+        try:
+            if retarget_automation(aid, own_thread_id):
+                logger.warning("Automation %s targeted archived thread %s; retargeted to %s", aid, bad, own_thread_id)
+        except Exception as e:
+            logger.warning("Failed to retarget automation %s: %s", aid, e)
+
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"])
 async def proxy_all(request: Request, background_tasks: BackgroundTasks):
     full_path = "/" + request.path_params.get("path", "")
@@ -292,14 +303,8 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
                 if own_thread_id and b"automation_update" in tail:
                     background_tasks_fix = find_misdirected_automation_updates(tail, archived_thread_ids())
                     if background_tasks_fix:
-                        # Let Codex apply the tool call first, then point the automation back at the calling thread
-                        await asyncio.sleep(3.0)
-                        for aid, bad in background_tasks_fix.items():
-                            if retarget_automation(aid, own_thread_id):
-                                logger.warning(
-                                    "Automation %s targeted archived thread %s; retargeted to calling thread %s",
-                                    aid, bad, own_thread_id,
-                                )
+                        # Run detached: the stream generator can be cancelled once the client has the response
+                        asyncio.create_task(_retarget_later(background_tasks_fix, own_thread_id))
                 # If this was a Responses API stream, trigger reconciliation in background
                 if is_responses_api:
                     await asyncio.sleep(0.5)
