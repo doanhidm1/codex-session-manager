@@ -57,6 +57,19 @@ def get_mapping_db_path(custom_path: Optional[str] = None) -> str:
     return default_db
 
 
+def archived_thread_ids(state_db: Optional[str] = None) -> Set[str]:
+    """IDs of archived threads in state_5.sqlite (empty set if unavailable)."""
+    path = state_db or os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "state_5.sqlite")
+    if not os.path.exists(path):
+        return set()
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0) as conn:
+            return {r[0] for r in conn.execute("SELECT id FROM threads WHERE archived = 1")}
+    except Exception as e:
+        logger.debug("Failed to read archived threads from %s: %s", path, e)
+        return set()
+
+
 def get_active_session_mappings(
     mapping_db_path: Optional[str] = None,
 ) -> Tuple[Dict[str, str], List[Tuple[str, str, str]]]:
@@ -322,20 +335,27 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
 
     # 4. Construct effective directive with active DeepSeek thread registry
     effective_directive = TOOL_DIRECTIVE
-    if pairs_info:
-        registry_lines = [
-            "\n\n[ACTIVE DEEPSEEK THREAD REGISTRY]",
-            "You are operating in an active DeepSeek-mode workspace.",
-            "When calling `automation_update`, `send_message_to_thread`, or `read_thread`, you MUST ONLY use the active DeepSeek thread IDs:",
-        ]
-        for name, oai_id, ds_id in pairs_info:
-            registry_lines.append(f"- {name} (ds): {ds_id}")
-        registry_lines.extend(
-            [
-                "When creating heartbeat automations for yourself, set `targetThreadId` to your own active DeepSeek session ID (NOT the legacy OpenAI original ID).",
-                "NEVER target or message the original OpenAI threads.",
-            ]
-        )
+    # The model cannot know its own thread ID; without it, "target yourself" made it pick another thread from the
+    # registry (seven heartbeats ended up on one archived thread). Codex sends the thread ID as prompt_cache_key.
+    own_id = str(data.get("prompt_cache_key") or "")
+    archived = archived_thread_ids()
+    live_pairs = [(name, oai_id, ds_id) for name, oai_id, ds_id in pairs_info if ds_id not in archived]
+    if live_pairs or own_id:
+        registry_lines = ["\n\n[ACTIVE DEEPSEEK THREAD REGISTRY]", "You are operating in an active DeepSeek-mode workspace."]
+        if own_id:
+            own_name = next((f"{n} (ds)" for n, _, d in live_pairs if d == own_id), "this conversation")
+            registry_lines.append(
+                f"YOUR OWN THREAD ID is {own_id} ({own_name}). Heartbeat automations about your own work MUST use "
+                f"`targetThreadId` = {own_id}. Never target another thread unless the user explicitly asks."
+            )
+        if live_pairs:
+            registry_lines.append(
+                "Other active (non-archived) DeepSeek threads you may read or message when the task requires it:"
+            )
+            for name, oai_id, ds_id in live_pairs:
+                if ds_id != own_id:
+                    registry_lines.append(f"- {name} (ds): {ds_id}")
+        registry_lines.append("NEVER target or message the original OpenAI threads or archived threads.")
         effective_directive += "\n".join(registry_lines)
 
     # Inject tool directive into developer message (or prepend if absent)

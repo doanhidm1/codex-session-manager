@@ -163,6 +163,40 @@ class TestToolStepEffort(unittest.TestCase):
         self.assertEqual(out["reasoning"]["effort"], "max")
 
 
+class TestThreadRegistry(unittest.TestCase):
+    def test_own_thread_id_given_and_archived_threads_hidden(self):
+        import sqlite3
+
+        from codex_manager.proxy.adapter import adapt_responses_body
+
+        with tempfile.TemporaryDirectory() as home:
+            with sqlite3.connect(os.path.join(home, "state_5.sqlite")) as c:
+                c.execute("CREATE TABLE threads (id TEXT, archived INTEGER)")
+                c.executemany("INSERT INTO threads VALUES (?, ?)", [("ds-own", 0), ("ds-other", 0), ("ds-arch", 1)])
+            mdb = os.path.join(home, "session_manager.sqlite")
+            with sqlite3.connect(mdb) as c:
+                c.execute("CREATE TABLE session_pairs (name TEXT, openai_thread_id TEXT, deepseek_thread_id TEXT, is_active INTEGER)")
+                c.executemany(
+                    "INSERT INTO session_pairs VALUES (?, ?, ?, 1)",
+                    [("Own", "o1", "ds-own"), ("Other", "o2", "ds-other"), ("Chat", "o3", "ds-arch")],
+                )
+            old = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = home
+            try:
+                body = json.dumps(
+                    {"model": "m", "prompt_cache_key": "ds-own", "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]}
+                ).encode()
+                text = json.dumps(json.loads(adapt_responses_body(body, mapping_db_path=mdb)), ensure_ascii=False)
+            finally:
+                if old is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = old
+        self.assertIn("YOUR OWN THREAD ID is ds-own (Own (ds))", text)
+        self.assertIn("Other (ds): ds-other", text)
+        self.assertNotIn("ds-arch", text)
+
+
 class TestDeepSeekKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

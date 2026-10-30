@@ -357,6 +357,19 @@ class CodexAppServerClient {
     return res?.data || res?.threads || [];
   }
 
+  async isArchived(threadId) {
+    await this.connect();
+    let cursor = null;
+    for (let page = 0; page < 20; page++) {
+      const res = await this.request('thread/list', { archived: true, limit: 100, ...(cursor ? { cursor } : {}) });
+      const rows = res?.data || [];
+      if (rows.some((t) => (t.id || t.threadId) === threadId)) return true;
+      cursor = res?.nextCursor || null;
+      if (!cursor || rows.length === 0) return false;
+    }
+    return false;
+  }
+
   async readThread(threadId) {
     await this.connect();
     const res = await this.request('thread/read', { threadId });
@@ -617,6 +630,12 @@ async function handleSendMessage(args = {}) {
   }
 
   const threadId = await resolveLiveThreadId(targetRaw);
+
+  // Archived threads are closed: resuming one to deliver a message silently revives it (and heartbeats sent to a
+  // wrongly chosen archived thread were how work got lost). Refuse instead.
+  if (await client.isArchived(threadId)) {
+    throw new Error(`Thread \`${threadId}\` is archived; refusing to send. Unarchive it first or pick an active thread.`);
+  }
 
   // Ensure thread is loaded into daemon memory
   await client.ensureThreadLoaded(threadId);
