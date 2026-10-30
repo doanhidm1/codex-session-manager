@@ -3,11 +3,12 @@ import re
 import sqlite3
 
 from .config import CodexPaths
-from .toml_utils import update_config_toml
+from .toml_utils import read_top_level_value, update_config_toml
 
 SUPPORTED_PROVIDERS = ("openai", "deepseek")
 DEEPSEEK_DOCS_URL = "https://api-docs.deepseek.com/quick_start/agent_integrations/codex/"
 
+DEFAULT_WEB_SEARCH = {"openai": "live", "deepseek": "disabled"}
 DEFAULT_MODELS = {"deepseek": ("deepseek-flash", "high"), "openai": ("gpt-5.6-terra", "high")}
 
 
@@ -78,6 +79,44 @@ def warn_if_deepseek_unconfigured(codex_home):
         print("     --------------------------------------------------------------------")
         print("=" * 76 + "\n")
     return ok
+
+
+def get_last_web_search(mapping_db_path, provider):
+    """Last saved web_search mode ("live"/"cached"/"disabled") for a provider."""
+    prov = provider.lower().strip()
+    default = DEFAULT_WEB_SEARCH.get(prov, "disabled")
+    if not os.path.exists(mapping_db_path):
+        return default
+    try:
+        with sqlite3.connect(mapping_db_path, timeout=5.0) as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS manager_settings (key TEXT PRIMARY KEY, value TEXT)")
+            row = cur.execute("SELECT value FROM manager_settings WHERE key = ?", (f"last_{prov}_web_search",)).fetchone()
+            return row[0] if row and row[0] else default
+    except Exception:
+        return default
+
+
+def save_web_search(mapping_db_path, provider, mode):
+    """Persist the web_search mode for a provider in session_manager.sqlite."""
+    if not mode:
+        return
+    prov = provider.lower().strip()
+    try:
+        with sqlite3.connect(mapping_db_path, timeout=5.0) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS manager_settings (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute(
+                "INSERT OR REPLACE INTO manager_settings (key, value) VALUES (?, ?)",
+                (f"last_{prov}_web_search", str(mode)),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def get_config_web_search(config_path):
+    """Current top-level web_search value in config.toml (None if unset)."""
+    return read_top_level_value(config_path, "web_search")
 
 
 def get_last_provider_settings(mapping_db_path, provider):

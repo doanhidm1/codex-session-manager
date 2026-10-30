@@ -42,7 +42,11 @@ def split_single_thread(thread_id: str, keep_turns: int = 500, paths: Optional[C
         (thread_id,),
     ).fetchall()
 
-    total_turns = len(db_turns)
+    # Split on the turns that actually exist in the rollout: thread_turns can hold rows without any
+    # rollout records (e.g. turns registered by sync with nothing to append), and picking one of those
+    # as the split point fails with "Could not find split turn start".
+    rollout_turns = scan_rollout_offsets(rollout_path)
+    total_turns = len(rollout_turns)
     if total_turns <= keep_turns:
         conn_s.close()
         conn_th.close()
@@ -52,9 +56,9 @@ def split_single_thread(thread_id: str, keep_turns: int = 500, paths: Optional[C
         )
 
     split_idx = total_turns - keep_turns
-    split_turn = dict(db_turns[split_idx])
-    split_turn_id = split_turn["turn_id"]
-    split_ordinal = split_turn["rollout_ordinal"]
+    split_turn_id = rollout_turns[split_idx]["turn_id"]
+    split_ordinal = rollout_turns[split_idx]["ordinal"]
+    split_turn = next((dict(r) for r in db_turns if r["turn_id"] == split_turn_id), {"turn_id": split_turn_id})
 
     base_id = str(uuid.uuid4())
     rollout_dir = os.path.dirname(rollout_path)

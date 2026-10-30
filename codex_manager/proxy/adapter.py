@@ -83,32 +83,77 @@ def get_active_session_mappings(
         return {}, []
 
 
-def is_tool_followup_turn(input_items: List[Dict[str, Any]]) -> bool:
+_CALL_TYPES = ("function_call", "custom_tool_call")
+_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
+
+
+def keep_tool_outputs_adjacent(items: List[Any]) -> List[Any]:
     """
-    Checks if the last action in the conversation history is a tool execution result,
-    meaning the model is currently running inside an autonomous tool execution loop.
+    Defer any non-tool item that appears while tool calls are still waiting for their outputs, so every
+    call is directly followed by its output. Returns the same list object when nothing had to move.
     """
-    if not input_items:
-        return False
-    for item in reversed(input_items):
-        if not isinstance(item, dict):
-            continue
-        itype = item.get("type")
-        if itype in ("function_call_output", "custom_tool_call_output"):
-            return True
-        if itype == "message":
-            if item.get("role") == "tool":
-                return True
-            content = item.get("content", [])
-            for c in content:
-                if isinstance(c, dict) and "text" in c:
-                    t = str(c["text"]).strip()
-                    if t.startswith("{") and ("exit_code" in t or "output" in t or "result" in t):
-                        return True
-            return False
-        if itype in ("function_call", "custom_tool_call"):
-            return True
-    return False
+    answered = {
+        str(it.get("call_id"))
+        for it in items
+        if isinstance(it, dict) and it.get("type") in _OUTPUT_TYPES and it.get("call_id")
+    }
+    out: List[Any] = []
+    deferred: List[Any] = []
+    pending: Set[str] = set()
+    for it in items:
+        itype = it.get("type") if isinstance(it, dict) else None
+        if itype in _CALL_TYPES:
+            cid = str(it.get("call_id") or "")
+            if cid in answered:
+                pending.add(cid)
+            out.append(it)
+        elif itype in _OUTPUT_TYPES:
+            out.append(it)
+            pending.discard(str(it.get("call_id") or ""))
+            if not pending and deferred:
+                out.extend(deferred)
+                deferred = []
+        elif pending:
+            deferred.append(it)
+        else:
+            out.append(it)
+    out.extend(deferred)
+    return items if out == items else out
+
+
+TOOL_IMAGE_NOTE = "[image returned by this tool call; it is attached in the next user message]"
+
+
+def move_tool_images_to_user_messages(items: List[Any]) -> List[Any]:
+    """
+    DeepSeek accepts images only in user messages (images elsewhere are dropped or rejected), but Codex returns
+    screenshots / view_image results inside tool outputs. Replace each such image with a short note and attach
+    the images in a user message placed right after that output. Deterministic, so the prompt prefix stays
+    cache-stable. Returns the same list object when there is nothing to move.
+    """
+    out: List[Any] = []
+    moved = False
+    for it in items:
+        if isinstance(it, dict) and it.get("type") in _OUTPUT_TYPES and isinstance(it.get("output"), list):
+            images = [p for p in it["output"] if isinstance(p, dict) and p.get("type") == "input_image"]
+            if images:
+                it["output"] = [
+                    {"type": "input_text", "text": TOOL_IMAGE_NOTE} if (isinstance(p, dict) and p.get("type") == "input_image") else p
+                    for p in it["output"]
+                ]
+                out.append(it)
+                out.append(
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": f"Image(s) from tool call {it.get('call_id', '')}:"}]
+                        + images,
+                    }
+                )
+                moved = True
+                continue
+        out.append(it)
+    return out if moved else items
 
 
 def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = None) -> bytes:
@@ -250,6 +295,20 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
 
         new_input.append(item)
 
+    # 3.4 Images: keep them in user messages, move tool-output images into user messages (DeepSeek vision rule)
+    with_images = move_tool_images_to_user_messages(new_input)
+    if with_images is not new_input:
+        new_input = with_images
+        adapted = True
+
+    # 3.5 DeepSeek requires each tool output right after its call; hooks (e.g. a PostToolUse developer
+    # message) can land in between, which DeepSeek rejects with "No tool output found for tool call ..."
+    reordered = keep_tool_outputs_adjacent(new_input)
+    if reordered is not new_input:
+        new_input = reordered
+        adapted = True
+        logger.info("Moved item(s) that sat between a tool call and its output after the output.")
+
     # 4. Construct effective directive with active DeepSeek thread registry
     effective_directive = TOOL_DIRECTIVE
     if pairs_info:
@@ -290,38 +349,21 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
         )
         adapted = True
 
-    # 5. Append reminder to the last user message
-    for item in reversed(new_input):
+    # 5. Append the reminder to every user message. Adding it only to the latest one moved it on each new user
+    # message, changing an earlier part of the prompt and invalidating DeepSeek's prefix cache from that point on.
+    for item in new_input:
         if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user":
             content = item.get("content")
             if isinstance(content, list) and len(content) > 0:
                 last_block = content[-1]
-                if isinstance(last_block, dict) and "text" in last_block:
+                if isinstance(last_block, dict) and "text" in last_block and not str(last_block["text"]).endswith(
+                    USER_TOOL_REMINDER
+                ):
                     last_block["text"] += USER_TOOL_REMINDER
                     adapted = True
-                    break
 
-    # 6. Dynamic Reasoning Effort Adaptation:
-    # - If intermediate tool step: enforce 'low' reasoning effort to prevent wasting token budget.
-    # - If direct user chat: preserve user-selected effort as-is (Codex UI natively offers low, medium, high).
-    if is_tool_followup_turn(new_input):
-        target_effort = "low"
-        if "reasoning" in data and isinstance(data["reasoning"], dict):
-            if data["reasoning"].get("effort") != target_effort:
-                data["reasoning"]["effort"] = target_effort
-                adapted = True
-        elif "reasoning_effort" in data:
-            if data["reasoning_effort"] != target_effort:
-                data["reasoning_effort"] = target_effort
-                adapted = True
-        elif "output_config" in data and isinstance(data["output_config"], dict):
-            if data["output_config"].get("effort") != target_effort:
-                data["output_config"]["effort"] = target_effort
-                adapted = True
-        else:
-            data["reasoning"] = {"effort": target_effort}
-            adapted = True
-        logger.debug("Dynamic Reasoning: Enforced 'low' effort for tool-calling loop turn.")
+    # 6. Reasoning effort is passed through unchanged: DeepSeek renders it into the prompt, so changing it
+    # between requests of one thread splits the prefix cache (measured: a switch re-bills nearly the whole context).
 
     if adapted:
         data["input"] = new_input

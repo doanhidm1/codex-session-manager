@@ -133,6 +133,7 @@ def stream_turn_wire_records(
     completed_at = orig_completed_at or started_at
     duration_ms = None
     error_json = None
+    aborted = False
     turn_start_ord = curr_ord
     turn_start_offset = curr_offset
 
@@ -156,18 +157,19 @@ def stream_turn_wire_records(
                 duration_ms = p.get("duration_ms")
                 if p.get("error"):
                     error_json = json.dumps(p.get("error"), ensure_ascii=False)
+            elif ptype == "turn_aborted" and p.get("turn_id") in (None, tid):
+                # Stopped by the user: keep it interrupted so Codex shows the turn as stopped and the queue as paused
+                aborted = True
+                completed_at = p.get("completed_at") or completed_at
+                duration_ms = p.get("duration_ms") or duration_ms
             elif ptype == "item_completed":
                 it = p.get("item", {})
                 itype_raw = it.get("type", "")
                 iid = it.get("id", "")
 
-                if (
-                    tgt_prov == "openai"
-                    and itype_raw in ("reasoning", "Reasoning")
-                    and not (it.get("encrypted_content") or "").startswith("gAAAAAB")
-                ):
-                    if not (source_items_map and iid in source_items_map):
-                        continue
+                # Reasoning never crosses providers (encrypted/foreign blobs are unusable on the other side): drop it both ways
+                if itype_raw in ("reasoning", "Reasoning"):
+                    continue
 
                 is_converted_xml = False
                 # DeepSeek API compatibility: synthetic tool call outputs must be standard user XML
@@ -321,15 +323,13 @@ def stream_turn_wire_records(
                 if pname:
                     p["name"] = sanitize_tool_name(pname)
 
+            if ptype == "reasoning":
+                # Reasoning is provider-specific (OpenAI encrypted_content / DeepSeek reasoning_content) and cannot be
+                # replayed on the other provider, so it is skipped in both directions. Tool calls/outputs are kept.
+                continue
+
             if tgt_prov == "openai":
-                if ptype == "reasoning":
-                    enc = p.get("encrypted_content") or ""
-                    if not enc.startswith("gAAAAAB"):
-                        # Non-OpenAI reasoning item: OpenAI server cannot decrypt foreign encrypted_content.
-                        # Omitting it from the JSONL rollout prevents: "The encrypted content ... could not be verified."
-                        continue
-                    p["content"] = None
-                elif ptype == "message":
+                if ptype == "message":
                     mid = p.get("id") or ""
                     if mid and not mid.startswith("msg"):
                         p["id"] = "msg_" + (mid[4:] if mid.startswith("fco_") else mid)
@@ -372,7 +372,7 @@ def stream_turn_wire_records(
         "thread_id": tgt_id,
         "turn_id": tid,
         "rollout_ordinal": turn_start_ord,
-        "status": "failed" if error_json else "completed",
+        "status": "failed" if error_json else ("interrupted" if aborted else "completed"),
         "error_json": error_json,
         "started_at": started_at,
         "completed_at": completed_at,
