@@ -87,6 +87,18 @@ _CALL_TYPES = ("function_call", "custom_tool_call")
 _OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
 
 
+def _is_call(it: Any) -> bool:
+    # Any paired call item: function_call, custom_tool_call, tool_search_call, ... (carries a call_id)
+    t = it.get("type") if isinstance(it, dict) else None
+    return bool(t) and t.endswith("_call") and bool(it.get("call_id"))
+
+
+def _is_output(it: Any) -> bool:
+    # Matching outputs: function_call_output, custom_tool_call_output, tool_search_output, ...
+    t = it.get("type") if isinstance(it, dict) else None
+    return bool(t) and t.endswith("_output") and bool(it.get("call_id"))
+
+
 def keep_tool_outputs_adjacent(items: List[Any]) -> List[Any]:
     """
     Defer any non-tool item that appears while tool calls are still waiting for their outputs, so every
@@ -95,19 +107,18 @@ def keep_tool_outputs_adjacent(items: List[Any]) -> List[Any]:
     answered = {
         str(it.get("call_id"))
         for it in items
-        if isinstance(it, dict) and it.get("type") in _OUTPUT_TYPES and it.get("call_id")
+        if _is_output(it)
     }
     out: List[Any] = []
     deferred: List[Any] = []
     pending: Set[str] = set()
     for it in items:
-        itype = it.get("type") if isinstance(it, dict) else None
-        if itype in _CALL_TYPES:
+        if _is_call(it):
             cid = str(it.get("call_id") or "")
             if cid in answered:
                 pending.add(cid)
             out.append(it)
-        elif itype in _OUTPUT_TYPES:
+        elif _is_output(it):
             out.append(it)
             pending.discard(str(it.get("call_id") or ""))
             if not pending and deferred:

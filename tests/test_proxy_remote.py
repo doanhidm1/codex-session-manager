@@ -70,6 +70,17 @@ class TestToolOutputAdjacency(unittest.TestCase):
         user = {"type": "message", "role": "user", "content": []}
         self.assertEqual(keep_tool_outputs_adjacent([call, hook, out, user]), [call, out, hook, user])
 
+    def test_tool_search_pair_kept_adjacent_when_image_moved(self):
+        from codex_manager.proxy.adapter import keep_tool_outputs_adjacent, move_tool_images_to_user_messages
+
+        img = {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+        view = {"type": "function_call", "call_id": "c0", "name": "view_image"}
+        search = {"type": "tool_search_call", "call_id": "c1"}
+        view_out = {"type": "function_call_output", "call_id": "c0", "output": [img]}
+        search_out = {"type": "tool_search_output", "call_id": "c1", "tools": []}
+        res = keep_tool_outputs_adjacent(move_tool_images_to_user_messages([view, search, view_out, search_out]))
+        self.assertEqual([it["type"] for it in res], ["function_call", "tool_search_call", "function_call_output", "tool_search_output", "message"])
+
     def test_ordered_or_unanswered_untouched(self):
         from codex_manager.proxy.adapter import keep_tool_outputs_adjacent
 
