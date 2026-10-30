@@ -197,6 +197,32 @@ class TestThreadRegistry(unittest.TestCase):
         self.assertNotIn("ds-arch", text)
 
 
+class TestMisdirectedAutomations(unittest.TestCase):
+    def test_detect_and_retarget(self):
+        import sqlite3
+
+        from codex_manager.proxy.reconciler import find_misdirected_automation_updates, retarget_automation
+
+        args = json.dumps({"id": "veo-rel", "mode": "update", "targetThreadId": "arch-1"})
+        item = {"type": "function_call", "name": "automation_update", "namespace": "mcp__codex_app", "arguments": args}
+        tail = ("data: " + json.dumps({"type": "response.output_item.done", "item": item}) + "\n\n").encode()
+        self.assertEqual(find_misdirected_automation_updates(tail, {"arch-1"}), {"veo-rel": "arch-1"})
+        self.assertEqual(find_misdirected_automation_updates(tail, {"other"}), {})
+        with tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(home, "automations", "veo-rel"))
+            os.makedirs(os.path.join(home, "sqlite"))
+            with open(os.path.join(home, "automations", "veo-rel", "automation.toml"), "w") as f:
+                f.write('id = "veo-rel"\ntarget_thread_id = "arch-1"\n')
+            with sqlite3.connect(os.path.join(home, "sqlite", "codex-dev.db")) as c:
+                c.execute("CREATE TABLE automations (id TEXT, target_thread_id TEXT)")
+                c.execute("INSERT INTO automations VALUES ('veo-rel', 'arch-1')")
+            self.assertTrue(retarget_automation("veo-rel", "own-1", codex_home=home))
+            with open(os.path.join(home, "automations", "veo-rel", "automation.toml")) as f:
+                self.assertIn('target_thread_id = "own-1"', f.read())
+            with sqlite3.connect(os.path.join(home, "sqlite", "codex-dev.db")) as c:
+                self.assertEqual(c.execute("SELECT target_thread_id FROM automations").fetchone()[0], "own-1")
+
+
 class TestDeepSeekKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

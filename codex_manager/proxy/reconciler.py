@@ -8,8 +8,9 @@ the full turn contents instead of empty `items: []`.
 import json
 import logging
 import os
+import re
 import sqlite3
-from typing import Optional
+from typing import Dict, Optional, Set
 
 logger = logging.getLogger("deepseek_proxy.reconciler")
 
@@ -246,3 +247,64 @@ def reconcile_automations(
         logger.warning("Error scanning automations directory: %s", e)
 
     return updated_count
+
+
+def find_misdirected_automation_updates(response_tail: bytes, archived: Set[str]) -> Dict[str, str]:
+    """
+    Parse completed automation_update calls from a Responses stream/body and return
+    {automation_id: archived_target_id} for those that point at an archived thread.
+    """
+    found: Dict[str, str] = {}
+    text = response_tail.decode("utf-8", "replace")
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if "automation_update" not in line or not line.startswith("{"):
+            continue
+        try:
+            evt = json.loads(line)
+        except Exception:
+            continue
+        items = []
+        if isinstance(evt.get("item"), dict):
+            items.append(evt["item"])
+        resp = evt.get("response") if isinstance(evt.get("response"), dict) else evt
+        items.extend(o for o in (resp.get("output") or []) if isinstance(o, dict))
+        for it in items:
+            if it.get("type") != "function_call" or it.get("name") != "automation_update":
+                continue
+            try:
+                args = json.loads(it.get("arguments") or "{}")
+            except Exception:
+                continue
+            aid, target = args.get("id"), args.get("targetThreadId")
+            if aid and target in archived:
+                found[aid] = target
+    return found
+
+
+def retarget_automation(automation_id: str, new_thread_id: str, codex_home: Optional[str] = None) -> bool:
+    """Point an automation (automation.toml + desktop codex-dev.db) at new_thread_id."""
+    home = codex_home or os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    changed = False
+    toml_path = os.path.join(home, "automations", automation_id, "automation.toml")
+    if os.path.exists(toml_path):
+        with open(toml_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        new = re.sub(r'(?m)^target_thread_id\s*=\s*".*"$', f'target_thread_id = "{new_thread_id}"', content)
+        if new != content:
+            with open(toml_path, "w", encoding="utf-8") as f:
+                f.write(new)
+            changed = True
+    db = os.path.join(home, "sqlite", "codex-dev.db")
+    if os.path.exists(db):
+        try:
+            with sqlite3.connect(db, timeout=5.0) as conn:
+                changed |= conn.execute(
+                    "UPDATE automations SET target_thread_id = ? WHERE id = ? AND target_thread_id != ?",
+                    (new_thread_id, automation_id, new_thread_id),
+                ).rowcount > 0
+        except Exception as e:
+            logger.debug("Failed to retarget %s in %s: %s", automation_id, db, e)
+    return changed

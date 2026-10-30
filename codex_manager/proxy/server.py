@@ -33,7 +33,13 @@ from .config import (
     UPSTREAM_TIMEOUT_SEC,
 )
 from . import reqlog
-from .reconciler import reconcile_automations, reconcile_delegation_turns
+from .adapter import archived_thread_ids
+from .reconciler import (
+    find_misdirected_automation_updates,
+    reconcile_automations,
+    reconcile_delegation_turns,
+    retarget_automation,
+)
 
 logger = logging.getLogger("deepseek_proxy.server")
 
@@ -238,6 +244,12 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
             content=req_body,
         )
 
+        own_thread_id = ""
+        if is_responses_api:
+            try:
+                own_thread_id = str(json.loads(req_body.decode("utf-8")).get("prompt_cache_key") or "")
+            except Exception:
+                own_thread_id = ""
         log_rec = reqlog.describe_request(req_body, dict(request.headers)) if is_responses_api and reqlog.enabled() else None
         started = time.time()
         resp = await upstream_client.send(req, stream=True)
@@ -255,7 +267,7 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
                 # Must exceed the longest pattern so a match split across chunks is completed before it is emitted
                 overlap = 512
                 async for chunk in resp.aiter_bytes():
-                    if log_rec is not None:
+                    if log_rec is not None or own_thread_id:
                         tail = (tail + chunk)[-262144:]
                     if replacements:
                         buffer += chunk
@@ -277,6 +289,17 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
             finally:
                 await resp.aclose()
                 reqlog.finish(log_rec, resp.status_code, tail, started)
+                if own_thread_id and b"automation_update" in tail:
+                    background_tasks_fix = find_misdirected_automation_updates(tail, archived_thread_ids())
+                    if background_tasks_fix:
+                        # Let Codex apply the tool call first, then point the automation back at the calling thread
+                        await asyncio.sleep(3.0)
+                        for aid, bad in background_tasks_fix.items():
+                            if retarget_automation(aid, own_thread_id):
+                                logger.warning(
+                                    "Automation %s targeted archived thread %s; retargeted to calling thread %s",
+                                    aid, bad, own_thread_id,
+                                )
                 # If this was a Responses API stream, trigger reconciliation in background
                 if is_responses_api:
                     await asyncio.sleep(0.5)
