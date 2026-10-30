@@ -101,17 +101,21 @@ class TestPromptCacheStability(unittest.TestCase):
         second = self._adapt([user("a"), call, out, user("b")])
         self.assertEqual(second[: len(first)], first)
 
-    def test_images_replaced_with_text(self):
-        from codex_manager.proxy.adapter import IMAGE_PLACEHOLDER
+    def test_user_images_kept_tool_images_moved_to_user_message(self):
+        from codex_manager.proxy.adapter import TOOL_IMAGE_NOTE
 
         img = {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
         call = {"type": "function_call", "call_id": "v", "name": "view_image", "arguments": "{}"}
-        out = {"type": "function_call_output", "call_id": "v", "output": [img]}
+        out = {"type": "function_call_output", "call_id": "v", "output": [dict(img)]}
         msg = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "see"}, dict(img)]}
         res = self._adapt([msg, call, out])
-        self.assertNotIn("base64", json.dumps(res))
-        self.assertIn(IMAGE_PLACEHOLDER, json.dumps(res))
-
+        first_user = next(it for it in res if it.get("type") == "message" and it.get("role") == "user")
+        self.assertIn(img, first_user["content"])  # user image untouched
+        out_idx = next(i for i, it in enumerate(res) if it.get("type") == "function_call_output")
+        self.assertEqual(res[out_idx]["output"], [{"type": "input_text", "text": TOOL_IMAGE_NOTE}])
+        follow = res[out_idx + 1]
+        self.assertEqual((follow["type"], follow["role"]), ("message", "user"))
+        self.assertIn(img, follow["content"])
 
 class TestRequestLog(unittest.TestCase):
     def test_divergence_and_usage(self):

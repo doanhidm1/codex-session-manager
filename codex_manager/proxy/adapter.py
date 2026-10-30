@@ -121,37 +121,39 @@ def keep_tool_outputs_adjacent(items: List[Any]) -> List[Any]:
     return items if out == items else out
 
 
-IMAGE_PLACEHOLDER = (
-    "[image omitted: this model is text-only and cannot see images. Use text tools instead, "
-    "e.g. chrome take_snapshot / evaluate_script, or read the file contents.]"
-)
+TOOL_IMAGE_NOTE = "[image returned by this tool call; it is attached in the next user message]"
 
 
-def strip_images(items: List[Any]) -> bool:
-    """Replace input_image parts (in messages and tool outputs) with a text placeholder. Returns True if changed."""
-    changed = False
-
-    def clean(parts: Any) -> Any:
-        nonlocal changed
-        if not isinstance(parts, list):
-            return parts
-        out = []
-        for part in parts:
-            if isinstance(part, dict) and part.get("type") == "input_image":
-                out.append({"type": "input_text", "text": IMAGE_PLACEHOLDER})
-                changed = True
-            else:
-                out.append(part)
-        return out
-
+def move_tool_images_to_user_messages(items: List[Any]) -> List[Any]:
+    """
+    DeepSeek accepts images only in user messages (images elsewhere are dropped or rejected), but Codex returns
+    screenshots / view_image results inside tool outputs. Replace each such image with a short note and attach
+    the images in a user message placed right after that output. Deterministic, so the prompt prefix stays
+    cache-stable. Returns the same list object when there is nothing to move.
+    """
+    out: List[Any] = []
+    moved = False
     for it in items:
-        if not isinstance(it, dict):
-            continue
-        if it.get("type") == "message":
-            it["content"] = clean(it.get("content"))
-        elif it.get("type") in _OUTPUT_TYPES:
-            it["output"] = clean(it.get("output"))
-    return changed
+        if isinstance(it, dict) and it.get("type") in _OUTPUT_TYPES and isinstance(it.get("output"), list):
+            images = [p for p in it["output"] if isinstance(p, dict) and p.get("type") == "input_image"]
+            if images:
+                it["output"] = [
+                    {"type": "input_text", "text": TOOL_IMAGE_NOTE} if (isinstance(p, dict) and p.get("type") == "input_image") else p
+                    for p in it["output"]
+                ]
+                out.append(it)
+                out.append(
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": f"Image(s) from tool call {it.get('call_id', '')}:"}]
+                        + images,
+                    }
+                )
+                moved = True
+                continue
+        out.append(it)
+    return out if moved else items
 
 
 def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = None) -> bytes:
@@ -293,6 +295,12 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
 
         new_input.append(item)
 
+    # 3.4 Images: keep them in user messages, move tool-output images into user messages (DeepSeek vision rule)
+    with_images = move_tool_images_to_user_messages(new_input)
+    if with_images is not new_input:
+        new_input = with_images
+        adapted = True
+
     # 3.5 DeepSeek requires each tool output right after its call; hooks (e.g. a PostToolUse developer
     # message) can land in between, which DeepSeek rejects with "No tool output found for tool call ..."
     reordered = keep_tool_outputs_adjacent(new_input)
@@ -353,11 +361,6 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
                 ):
                     last_block["text"] += USER_TOOL_REMINDER
                     adapted = True
-
-    # 5.5 DeepSeek is text-only: images are dropped upstream (not billed, never seen by the model) but each one is
-    # still uploaded as base64 on every request. Replace them with a short note so the model knows to use text tools.
-    if strip_images(new_input):
-        adapted = True
 
     # 6. Reasoning effort is passed through unchanged: DeepSeek renders it into the prompt, so changing it
     # between requests of one thread splits the prefix cache (measured: a switch re-bills nearly the whole context).
