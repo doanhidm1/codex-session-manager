@@ -36,7 +36,15 @@ TOOL_DIRECTIVE = (
     "- AVOID TIGHT POLLING: Do not query thread status or poll files in rapid repetitive loops. Keep status updates concise and focused.\n"
     "CI/CD & LONG-RUNNING ASYNCHRONOUS TASK MONITORING (CRITICAL):\n"
     "- NEVER WAIT FOR CI IN A SHELL LOOP: Absolutely do NOT run long-running shell loops (`while true; sleep ...`, repeated curl/glab polling) in cmd/terminal to wait for CI/CD or build jobs. Long-running blocking commands flood context with logs, waste token budget, and trigger fatal SSE idle timeouts (`stream disconnected before completion: idle timeout waiting for SSE`).\n"
-    "- SCHEDULE INSTEAD OF BLOCKING: Inspect CI status ONCE via a quick command. If CI is still in progress (`running`/`pending`), IMMEDIATELY schedule an automation task (`automation_update` with namespace `mcp__codex_app`) or set a timer, report current status, and END THE TURN immediately. Re-check in the subsequent scheduled turn."
+    "- SCHEDULE INSTEAD OF BLOCKING: Inspect CI status ONCE via a quick command. If CI is still in progress (`running`/`pending`), keep or create this thread's heartbeat per the rules below, report current status, and END THE TURN immediately.\n"
+    "HEARTBEAT / AUTOMATION RULES (CRITICAL):\n"
+    "- At most ONE heartbeat per thread. If one exists, update it with `automation_update`; never create another.\n"
+    "- Use heartbeats only to wait for external events (CI, deploy, review). Do work that can be done now in this turn instead of scheduling a heartbeat to continue it.\n"
+    "- Waiting on another thread: ask it via `send_message_to_thread` to notify you when done, then PAUSE your heartbeat. Do not poll other threads.\n"
+    "- Interval matches the real wait: CI/pipeline 20-30 minutes, deploy/review 30-60 minutes, never below 15 minutes.\n"
+    "- Backoff: after 2 consecutive checks with no change, double the interval (max 60 minutes).\n"
+    "- On a terminal state (pass/fail handled, or blocked on a human), PAUSE or delete the heartbeat in that same turn.\n"
+    "- Keep the heartbeat prompt under 500 characters: only what to check next and the stop condition; detailed state stays in the thread."
 )
 
 
