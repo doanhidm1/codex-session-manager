@@ -309,4 +309,3 @@ def purge_internal_context_user_messages(db_path: Optional[str] = None) -> int:
         logger.warning("Failed to purge internal context user messages in %s: %s", db_path, e)
 
     return purged
-

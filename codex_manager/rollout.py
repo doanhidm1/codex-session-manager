@@ -97,7 +97,11 @@ def build_migrated_rollout_file(
                     "type": "item_completed",
                     "thread_id": new_thread_id,
                     "turn_id": tid,
-                    "item": {"type": "UserMessage", "id": f"item_u_{suffix}", "content": [{"type": "text", "text": u_text}]},
+                    "item": {
+                        "type": "UserMessage",
+                        "id": f"item_u_{suffix}",
+                        "content": [{"type": "text", "text": u_text}],
+                    },
                 },
             )
 

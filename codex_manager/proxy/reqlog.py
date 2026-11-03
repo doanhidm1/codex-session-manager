@@ -90,7 +90,11 @@ def describe_request(body: bytes, headers: Dict[str, str]) -> Optional[Dict[str,
     tools_bytes: Counter = Counter()
     for t in data.get("tools") or []:
         if isinstance(t, dict):
-            name = t.get("name") if t.get("type") == "namespace" else (t.get("type") if t.get("type") != "function" else "functions")
+            name = (
+                t.get("name")
+                if t.get("type") == "namespace"
+                else (t.get("type") if t.get("type") != "function" else "functions")
+            )
             tools_bytes[str(name)] += len(json.dumps(t, ensure_ascii=False))
 
     call_names: Dict[str, str] = {}
@@ -119,7 +123,9 @@ def describe_request(body: bytes, headers: Dict[str, str]) -> Optional[Dict[str,
         "diverge": diverge,
         "tools_bytes": dict(tools_bytes.most_common()),
         "tool_output_bytes": dict(out_bytes.most_common(12)),
-        "extra_keys": sorted(k for k in data if k not in ("model", "input", "tools", "stream", "reasoning", "instructions")),
+        "extra_keys": sorted(
+            k for k in data if k not in ("model", "input", "tools", "stream", "reasoning", "instructions")
+        ),
     }
 
 

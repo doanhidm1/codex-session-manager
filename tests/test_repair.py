@@ -314,8 +314,16 @@ class TestIndexSync(unittest.TestCase):
             self.assertNotIn("stdout", data)
 
     def test_is_internal_system_context(self):
-        self.assertTrue(is_internal_system_context("<environment_context><current_date>2026-10-01</current_date></environment_context>"))
-        self.assertTrue(is_internal_system_context('<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'))
+        self.assertTrue(
+            is_internal_system_context(
+                "<environment_context><current_date>2026-10-01</current_date></environment_context>"
+            )
+        )
+        self.assertTrue(
+            is_internal_system_context(
+                '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'
+            )
+        )
         self.assertTrue(is_internal_system_context("<collaboration_mode>plan</collaboration_mode>"))
         self.assertTrue(is_internal_system_context("<codex_internal_context>data</codex_internal_context>"))
         self.assertTrue(
@@ -325,7 +333,9 @@ class TestIndexSync(unittest.TestCase):
             )
         )
         self.assertFalse(is_internal_system_context("Hello world, how are you?"))
-        self.assertFalse(is_internal_system_context("# AGENTS.md instructions\n<instructions>do something</instructions>"))
+        self.assertFalse(
+            is_internal_system_context("# AGENTS.md instructions\n<instructions>do something</instructions>")
+        )
 
     def test_purge_internal_context_user_messages(self):
         tid = "test-purge-thread"
@@ -344,12 +354,33 @@ class TestIndexSync(unittest.TestCase):
                 )
             """)
             # Insert a genuine user message and an internal XML user message
-            genuine_json = json.dumps({"type": "userMessage", "id": "msg_real", "content": [{"type": "text", "text": "Real user prompt"}]})
-            xml_json = json.dumps({"type": "userMessage", "id": "msg_xml", "content": [{"type": "text", "text": "<environment_context><current_date>2026</current_date></environment_context>"}]})
+            genuine_json = json.dumps(
+                {"type": "userMessage", "id": "msg_real", "content": [{"type": "text", "text": "Real user prompt"}]}
+            )
+            xml_json = json.dumps(
+                {
+                    "type": "userMessage",
+                    "id": "msg_xml",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<environment_context><current_date>2026</current_date></environment_context>",
+                        }
+                    ],
+                }
+            )
 
-            cur.execute("INSERT INTO thread_items (thread_id, turn_id, item_id, item_json, item_type) VALUES (?, 't1', 'msg_xml', ?, 'userMessage')", (tid, xml_json))
-            cur.execute("INSERT INTO thread_items (thread_id, turn_id, item_id, item_json, item_type) VALUES (?, 't1', 'msg_real', ?, 'userMessage')", (tid, genuine_json))
-            cur.execute("INSERT INTO thread_turns (thread_id, turn_id, first_user_item_id) VALUES (?, 't1', 'msg_xml')", (tid,))
+            cur.execute(
+                "INSERT INTO thread_items (thread_id, turn_id, item_id, item_json, item_type) VALUES (?, 't1', 'msg_xml', ?, 'userMessage')",
+                (tid, xml_json),
+            )
+            cur.execute(
+                "INSERT INTO thread_items (thread_id, turn_id, item_id, item_json, item_type) VALUES (?, 't1', 'msg_real', ?, 'userMessage')",
+                (tid, genuine_json),
+            )
+            cur.execute(
+                "INSERT INTO thread_turns (thread_id, turn_id, first_user_item_id) VALUES (?, 't1', 'msg_xml')", (tid,)
+            )
             conn.commit()
 
         purged = purge_internal_context_user_messages(self.db_path)
@@ -368,4 +399,3 @@ class TestIndexSync(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

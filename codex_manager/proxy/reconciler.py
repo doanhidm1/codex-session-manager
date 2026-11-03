@@ -302,10 +302,13 @@ def retarget_automation(automation_id: str, new_thread_id: str, codex_home: Opti
     if os.path.exists(db):
         try:
             with sqlite3.connect(db, timeout=5.0) as conn:
-                changed |= conn.execute(
-                    "UPDATE automations SET target_thread_id = ? WHERE id = ? AND target_thread_id != ?",
-                    (new_thread_id, automation_id, new_thread_id),
-                ).rowcount > 0
+                changed |= (
+                    conn.execute(
+                        "UPDATE automations SET target_thread_id = ? WHERE id = ? AND target_thread_id != ?",
+                        (new_thread_id, automation_id, new_thread_id),
+                    ).rowcount
+                    > 0
+                )
         except Exception as e:
             logger.debug("Failed to retarget %s in %s: %s", automation_id, db, e)
     return changed

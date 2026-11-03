@@ -8,12 +8,19 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from codex_manager import apps
-from codex_manager.switch import move_queued_items, restore_unarchived_rollouts, sync_desktop_catalog, sync_turn_statuses
+from codex_manager.switch import (
+    move_queued_items,
+    restore_unarchived_rollouts,
+    sync_desktop_catalog,
+    sync_turn_statuses,
+)
 
 
 class TestClassify(unittest.TestCase):
     def test_kinds(self):
-        self.assertEqual(apps._classify(["/usr/lib/chatgpt/ChatGPT", "--codex-browser-background-networking-disabled"]), "desktop")
+        self.assertEqual(
+            apps._classify(["/usr/lib/chatgpt/ChatGPT", "--codex-browser-background-networking-disabled"]), "desktop"
+        )
         self.assertIsNone(apps._classify(["/usr/lib/chatgpt/ChatGPT", "--type=renderer"]))
         self.assertIsNone(apps._classify(["/usr/lib/chatgpt/ChatGPT --type=zygote --no-zygote-sandbox"]))
         self.assertIsNone(apps._classify(["/usr/lib/chatgpt/resources/codex", "app-server"]))
@@ -34,16 +41,19 @@ class TestEnsureStopped(unittest.TestCase):
             self.assertEqual(apps.ensure_codex_apps_stopped(), (True, []))
 
     def test_rejects_when_non_interactive(self):
-        with mock.patch.object(apps, "detect_codex_apps", return_value=self.RUNNING), mock.patch.object(
-            apps.sys.stdin, "isatty", return_value=False
-        ), mock.patch.object(apps, "stop_codex_apps") as stop:
+        with (
+            mock.patch.object(apps, "detect_codex_apps", return_value=self.RUNNING),
+            mock.patch.object(apps.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(apps, "stop_codex_apps") as stop,
+        ):
             self.assertEqual(apps.ensure_codex_apps_stopped(), (False, []))
             stop.assert_not_called()
 
     def test_stop_apps_flag_stops_without_asking(self):
-        with mock.patch.object(apps, "detect_codex_apps", side_effect=[self.RUNNING, []]), mock.patch.object(
-            apps, "stop_codex_apps", return_value=["codex-rc.service"]
-        ) as stop:
+        with (
+            mock.patch.object(apps, "detect_codex_apps", side_effect=[self.RUNNING, []]),
+            mock.patch.object(apps, "stop_codex_apps", return_value=["codex-rc.service"]) as stop,
+        ):
             self.assertEqual(apps.ensure_codex_apps_stopped(stop_apps=True), (True, ["codex-rc.service"]))
             stop.assert_called_once_with(self.RUNNING)
 
@@ -85,7 +95,9 @@ class TestSyncDesktopCatalog(unittest.TestCase):
         self.assertEqual(sync_desktop_catalog(cat, state.cursor()), 2)
         flags = dict(cat.execute("SELECT thread_id, missing_candidate FROM local_thread_catalog").fetchall())
         self.assertEqual(flags, {"vis": 0, "arch": 1, "gone": 1, "chatgpt": 0})
-        self.assertEqual(cat.execute("SELECT last_full_reconciled_at FROM local_thread_catalog_sync_state").fetchone()[0], 0)
+        self.assertEqual(
+            cat.execute("SELECT last_full_reconciled_at FROM local_thread_catalog_sync_state").fetchone()[0], 0
+        )
 
 
 class TestCarryTurnStateAndQueue(unittest.TestCase):
@@ -96,11 +108,19 @@ class TestCarryTurnStateAndQueue(unittest.TestCase):
                 c.execute("CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT, status TEXT)")
                 c.executemany(
                     "INSERT INTO thread_turns VALUES (?, ?, ?)",
-                    [("o", "t1", "completed"), ("o", "t2", "interrupted"), ("d", "t1", "completed"), ("d", "t2", "completed")],
+                    [
+                        ("o", "t1", "completed"),
+                        ("o", "t2", "interrupted"),
+                        ("d", "t1", "completed"),
+                        ("d", "t2", "completed"),
+                    ],
                 )
             self.assertEqual(sync_turn_statuses(db, "o", "d"), 1)
             with sqlite3.connect(db) as c:
-                self.assertEqual(c.execute("SELECT status FROM thread_turns WHERE thread_id='d' AND turn_id='t2'").fetchone()[0], "interrupted")
+                self.assertEqual(
+                    c.execute("SELECT status FROM thread_turns WHERE thread_id='d' AND turn_id='t2'").fetchone()[0],
+                    "interrupted",
+                )
 
     def test_queue_moved_in_order(self):
         with tempfile.TemporaryDirectory() as d:
@@ -111,7 +131,8 @@ class TestCarryTurnStateAndQueue(unittest.TestCase):
                     "created_at_ms INTEGER, updated_at_ms INTEGER, UNIQUE(thread_id, queue_order))"
                 )
                 c.executemany(
-                    "INSERT INTO queued_items VALUES (?, ?, '{}', ?, 0, 0)", [("a", "o", 4), ("b", "o", 5), ("c", "d", 0)]
+                    "INSERT INTO queued_items VALUES (?, ?, '{}', ?, 0, 0)",
+                    [("a", "o", 4), ("b", "o", 5), ("c", "d", 0)],
                 )
             self.assertEqual(move_queued_items(db, "o", "d"), 2)
             with sqlite3.connect(db) as c:

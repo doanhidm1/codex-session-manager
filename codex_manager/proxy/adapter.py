@@ -125,11 +125,7 @@ def keep_tool_outputs_adjacent(items: List[Any]) -> List[Any]:
     Defer any non-tool item that appears while tool calls are still waiting for their outputs, so every
     call is directly followed by its output. Returns the same list object when nothing had to move.
     """
-    answered = {
-        str(it.get("call_id"))
-        for it in items
-        if _is_output(it)
-    }
+    answered = {str(it.get("call_id")) for it in items if _is_output(it)}
     out: List[Any] = []
     deferred: List[Any] = []
     pending: Set[str] = set()
@@ -170,7 +166,9 @@ def move_tool_images_to_user_messages(items: List[Any]) -> List[Any]:
             images = [p for p in it["output"] if isinstance(p, dict) and p.get("type") == "input_image"]
             if images:
                 it["output"] = [
-                    {"type": "input_text", "text": TOOL_IMAGE_NOTE} if (isinstance(p, dict) and p.get("type") == "input_image") else p
+                    {"type": "input_text", "text": TOOL_IMAGE_NOTE}
+                    if (isinstance(p, dict) and p.get("type") == "input_image")
+                    else p
                     for p in it["output"]
                 ]
                 out.append(it)
@@ -349,7 +347,10 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
     archived = archived_thread_ids()
     live_pairs = [(name, oai_id, ds_id) for name, oai_id, ds_id in pairs_info if ds_id not in archived]
     if live_pairs or own_id:
-        registry_lines = ["\n\n[ACTIVE DEEPSEEK THREAD REGISTRY]", "You are operating in an active DeepSeek-mode workspace."]
+        registry_lines = [
+            "\n\n[ACTIVE DEEPSEEK THREAD REGISTRY]",
+            "You are operating in an active DeepSeek-mode workspace.",
+        ]
         if own_id:
             own_name = next((f"{n} (ds)" for n, _, d in live_pairs if d == own_id), "this conversation")
             registry_lines.append(
@@ -395,8 +396,10 @@ def adapt_responses_body(body_bytes: bytes, mapping_db_path: Optional[str] = Non
             content = item.get("content")
             if isinstance(content, list) and len(content) > 0:
                 last_block = content[-1]
-                if isinstance(last_block, dict) and "text" in last_block and not str(last_block["text"]).endswith(
-                    USER_TOOL_REMINDER
+                if (
+                    isinstance(last_block, dict)
+                    and "text" in last_block
+                    and not str(last_block["text"]).endswith(USER_TOOL_REMINDER)
                 ):
                     last_block["text"] += USER_TOOL_REMINDER
                     adapted = True

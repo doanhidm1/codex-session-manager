@@ -82,15 +82,15 @@ def set_section_key(codex_home, section, key, value):
     sm = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
     if not sm:
         return False
-    nxt = re.search(r"(?m)^\[", text[sm.end():])
+    nxt = re.search(r"(?m)^\[", text[sm.end() :])
     end = sm.end() + nxt.start() if nxt else len(text)
-    body = text[sm.end():end]
+    body = text[sm.end() : end]
     line = f'{key} = "{value}"'
     km = re.search(rf"(?m)^{re.escape(key)}\s*=.*$", body)
     if km:
         if km.group(0).strip() == line:
             return False
-        body = body[: km.start()] + line + body[km.end():]
+        body = body[: km.start()] + line + body[km.end() :]
     else:
         body = "\n" + line + body
     with open(paths.config_toml, "w", encoding="utf-8") as f:

@@ -55,7 +55,12 @@ class TestFlatMcpToolNames(unittest.TestCase):
 
     def test_namespaces_from_request(self):
         body = json.dumps(
-            {"tools": [{"type": "namespace", "name": "mcp__linear", "tools": []}, {"type": "function", "name": "exec_command"}]}
+            {
+                "tools": [
+                    {"type": "namespace", "name": "mcp__linear", "tools": []},
+                    {"type": "function", "name": "exec_command"},
+                ]
+            }
         ).encode()
         self.assertEqual(server._mcp_namespaces(body), {"mcp__linear"})
 
@@ -79,7 +84,10 @@ class TestToolOutputAdjacency(unittest.TestCase):
         view_out = {"type": "function_call_output", "call_id": "c0", "output": [img]}
         search_out = {"type": "tool_search_output", "call_id": "c1", "tools": []}
         res = keep_tool_outputs_adjacent(move_tool_images_to_user_messages([view, search, view_out, search_out]))
-        self.assertEqual([it["type"] for it in res], ["function_call", "tool_search_call", "function_call_output", "tool_search_output", "message"])
+        self.assertEqual(
+            [it["type"] for it in res],
+            ["function_call", "tool_search_call", "function_call_output", "tool_search_output", "message"],
+        )
 
     def test_ordered_or_unanswered_untouched(self):
         from codex_manager.proxy.adapter import keep_tool_outputs_adjacent
@@ -128,15 +136,20 @@ class TestPromptCacheStability(unittest.TestCase):
         self.assertEqual((follow["type"], follow["role"]), ("message", "user"))
         self.assertIn(img, follow["content"])
 
+
 class TestRequestLog(unittest.TestCase):
     def test_divergence_and_usage(self):
         from codex_manager.proxy import reqlog
 
         def body(texts, tools=None):
             items = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]} for t in texts]
-            return json.dumps({"model": "m", "prompt_cache_key": "conv-1", "input": items, "tools": tools or []}).encode()
+            return json.dumps(
+                {"model": "m", "prompt_cache_key": "conv-1", "input": items, "tools": tools or []}
+            ).encode()
 
-        tools = [{"type": "namespace", "name": "mcp__chrome_devtools", "tools": [{"type": "function", "name": "click"}]}]
+        tools = [
+            {"type": "namespace", "name": "mcp__chrome_devtools", "tools": [{"type": "function", "name": "click"}]}
+        ]
         first = reqlog.describe_request(body(["a", "b"], tools), {})
         self.assertIsNone(first["diverge"])
         self.assertIn("mcp__chrome_devtools", first["tools_bytes"])
@@ -175,7 +188,9 @@ class TestThreadRegistry(unittest.TestCase):
                 c.executemany("INSERT INTO threads VALUES (?, ?)", [("ds-own", 0), ("ds-other", 0), ("ds-arch", 1)])
             mdb = os.path.join(home, "session_manager.sqlite")
             with sqlite3.connect(mdb) as c:
-                c.execute("CREATE TABLE session_pairs (name TEXT, openai_thread_id TEXT, deepseek_thread_id TEXT, is_active INTEGER)")
+                c.execute(
+                    "CREATE TABLE session_pairs (name TEXT, openai_thread_id TEXT, deepseek_thread_id TEXT, is_active INTEGER)"
+                )
                 c.executemany(
                     "INSERT INTO session_pairs VALUES (?, ?, ?, 1)",
                     [("Own", "o1", "ds-own"), ("Other", "o2", "ds-other"), ("Chat", "o3", "ds-arch")],
@@ -184,7 +199,13 @@ class TestThreadRegistry(unittest.TestCase):
             os.environ["CODEX_HOME"] = home
             try:
                 body = json.dumps(
-                    {"model": "m", "prompt_cache_key": "ds-own", "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]}
+                    {
+                        "model": "m",
+                        "prompt_cache_key": "ds-own",
+                        "input": [
+                            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+                        ],
+                    }
                 ).encode()
                 text = json.dumps(json.loads(adapt_responses_body(body, mapping_db_path=mdb)), ensure_ascii=False)
             finally:

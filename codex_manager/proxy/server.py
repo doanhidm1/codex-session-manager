@@ -24,7 +24,8 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-from .adapter import adapt_responses_body, get_active_session_mappings
+from . import reqlog
+from .adapter import adapt_responses_body, archived_thread_ids, get_active_session_mappings
 from .config import (
     DEEPSEEK_UPSTREAM,
     PROXY_HOST,
@@ -32,8 +33,6 @@ from .config import (
     UPSTREAM_CONNECT_TIMEOUT_SEC,
     UPSTREAM_TIMEOUT_SEC,
 )
-from . import reqlog
-from .adapter import archived_thread_ids
 from .reconciler import (
     find_misdirected_automation_updates,
     reconcile_automations,
@@ -195,7 +194,16 @@ def split_flat_mcp_tool_names(buf: bytes, namespaces: Set[str]) -> bytes:
         for ns in sorted(namespaces, key=len, reverse=True):
             if flat.startswith(ns + "__") and len(flat) > len(ns) + 2:
                 sp = m.group(1)
-                return b'"name":' + sp + json.dumps(flat[len(ns) + 2 :]).encode() + b"," + sp + b'"namespace":' + sp + json.dumps(ns).encode()
+                return (
+                    b'"name":'
+                    + sp
+                    + json.dumps(flat[len(ns) + 2 :]).encode()
+                    + b","
+                    + sp
+                    + b'"namespace":'
+                    + sp
+                    + json.dumps(ns).encode()
+                )
         return m.group(0)
 
     return _MCP_FLAT_NAME_RE.sub(fix, buf)
@@ -261,7 +269,9 @@ async def proxy_all(request: Request, background_tasks: BackgroundTasks):
                 own_thread_id = str(json.loads(req_body.decode("utf-8")).get("prompt_cache_key") or "")
             except Exception:
                 own_thread_id = ""
-        log_rec = reqlog.describe_request(req_body, dict(request.headers)) if is_responses_api and reqlog.enabled() else None
+        log_rec = (
+            reqlog.describe_request(req_body, dict(request.headers)) if is_responses_api and reqlog.enabled() else None
+        )
         started = time.time()
         resp = await upstream_client.send(req, stream=True)
 
