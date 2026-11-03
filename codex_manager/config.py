@@ -34,7 +34,12 @@ class CodexPaths:
         self.codex_home = normalize_path(codex_home or get_default_codex_home())
         self.state_db = os.path.join(self.codex_home, "state_5.sqlite")
         self.th_db = os.path.join(self.codex_home, "thread_history_1.sqlite")
-        self.cat_db = os.path.join(self.codex_home, "sqlite", "codex-dev.db")
+        # The desktop sidebar (Recents) reads sqlite/codex.db; codex-dev.db belongs to dev builds and is only a fallback
+        live_cat = os.path.join(self.codex_home, "sqlite", "codex.db")
+        dev_cat = os.path.join(self.codex_home, "sqlite", "codex-dev.db")
+        self.cat_db = live_cat if os.path.exists(live_cat) else dev_cat
+        # Every existing catalog (live + dev) is kept in step, live first
+        self.cat_dbs = [p for p in (live_cat, dev_cat) if os.path.exists(p)] or [self.cat_db]
         self.backup_root = os.path.join(self.codex_home, "backup-sessions")
         self.sessions_dir = os.path.join(self.codex_home, "sessions")
         self.mapping_db = os.path.join(self.codex_home, "session_manager.sqlite")

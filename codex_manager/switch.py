@@ -205,10 +205,15 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
 
     check_and_auto_split(codex_home)
 
+    # 1.8 Hide/show the twin sessions through the app-server (thread/archive, thread/unarchive).
+    # A raw UPDATE of threads.archived is ignored by Codex's provider-filtered thread/list, so the "(ds)" copies
+    # stayed visible in the sidebar. The RPCs move the rollout to archived_sessions/ and fill archived_at.
+    _apply_app_server_archive(paths, pairs, mode, codex_home)
+
     # 2. Update archived status & sync names in state_5.sqlite and local_thread_catalog
     conn = get_connection(paths.state_db, timeout=10.0)
     cur = conn.cursor()
-    cat_conn = sqlite3.connect(paths.cat_db, timeout=5.0) if os.path.exists(paths.cat_db) else None
+    cat_conns = [sqlite3.connect(p, timeout=5.0) for p in paths.cat_dbs if os.path.exists(p)]
 
     for p in pairs:
         _, name, o_id, d_id, _, _, _ = p
@@ -259,7 +264,7 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (o_id,))
             cur.execute("UPDATE threads SET archived = 0 WHERE id = ? AND archived != 0", (d_id,))
 
-        if cat_conn:
+        for cat_conn in cat_conns:
             try:
                 cat_conn.execute("UPDATE local_thread_catalog SET display_title = ? WHERE thread_id = ?", (clean, o_id))
                 cat_conn.execute(
@@ -280,15 +285,16 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
     )
 
     conn.commit()
-    if cat_conn:
+    for cat_conn in cat_conns:
         try:
             hidden = sync_desktop_catalog(cat_conn, cur)
             if hidden:
                 print(f"[*] Hid {hidden} archived/deleted session(s) from the desktop Recents catalog.")
             cat_conn.commit()
-            cat_conn.close()
         except Exception as e:
             print(f"[-] WARNING: Could not update the desktop thread catalog: {e}")
+        finally:
+            cat_conn.close()
     conn.close()
 
     # 2.5 Update automations target_thread_id if matching any pair
@@ -363,6 +369,67 @@ def _switch_provider_impl(target_mode, codex_home, auto_sync=True, force=False):
     return True
 
 
+def _apply_app_server_archive(paths, pairs, mode, codex_home):
+    """Archive the outgoing twin and unarchive the incoming one via the app-server; best effort.
+
+    A raw UPDATE of threads.archived is ignored by Codex's provider-filtered thread/list, so the twin kept showing in
+    the sidebar. thread/archive also moves the rollout to archived_sessions/ and fills archived_at.
+    """
+    from .appserver import set_threads_archived
+
+    want_archived = {}
+    for p in pairs:
+        _, _, o_id, d_id, _, _, _ = p
+        if mode == "deepseek":
+            want_archived[o_id], want_archived[d_id] = True, False
+        elif mode == "openai":
+            want_archived[o_id], want_archived[d_id] = False, True
+        elif mode in ("all", "show"):
+            want_archived[o_id] = want_archived[d_id] = False
+    if not want_archived:
+        return
+
+    conn = get_connection(paths.state_db, timeout=10.0)
+    try:
+        rows = {
+            r[0]: (r[1], r[2] or "")
+            for r in conn.execute(
+                f"SELECT id, archived, rollout_path FROM threads WHERE id IN ({','.join('?' * len(want_archived))})",
+                list(want_archived),
+            ).fetchall()
+        }
+        to_archive, to_unarchive = [], []
+        for tid, want in want_archived.items():
+            if tid not in rows:
+                continue
+            archived, rpath = rows[tid]
+            really_archived = bool(archived) and os.sep + "archived_sessions" + os.sep in rpath
+            if want and not really_archived:
+                if archived:
+                    # legacy flag-only archive (rollout still in sessions/): reset so thread/archive can move it
+                    conn.execute("UPDATE threads SET archived = 0, archived_at = NULL WHERE id = ?", (tid,))
+                to_archive.append(tid)
+            elif not want and archived:
+                if really_archived:
+                    to_unarchive.append(tid)
+                else:
+                    conn.execute("UPDATE threads SET archived = 0, archived_at = NULL WHERE id = ?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    if not to_archive and not to_unarchive:
+        return
+    done = set_threads_archived(codex_home, archive_ids=to_archive, unarchive_ids=to_unarchive)
+    failed = [t for t in to_archive + to_unarchive if t not in done]
+    print(
+        f"[*] App-server archive: archived {len([t for t in to_archive if t in done])}, "
+        f"unarchived {len([t for t in to_unarchive if t in done])}."
+    )
+    if failed:
+        print(f"[-] WARNING: app-server could not change {len(failed)} thread(s); falling back to flag-only archive.")
+
+
 def sync_turn_statuses(th_db, src_id, dst_id):
     """Copy non-completed turn statuses (interrupted/failed) from src to the same turns of dst."""
     if not os.path.exists(th_db):
@@ -425,7 +492,9 @@ def sync_desktop_catalog(cat_conn, state_cur):
             )
             hidden += want
     try:
-        cat_conn.execute("UPDATE local_thread_catalog_sync_state SET last_full_reconciled_at = 0 WHERE host_id = 'local'")
+        cat_conn.execute(
+            "UPDATE local_thread_catalog_sync_state SET last_full_reconciled_at = 0 WHERE host_id = 'local'"
+        )
     except sqlite3.OperationalError:
         pass
     return hidden
@@ -480,9 +549,7 @@ def restart_remote_services(also_start=()):
         return
     for unit in REMOTE_SERVICES:
         try:
-            active = subprocess.run(
-                ["systemctl", "--user", "is-active", "--quiet", unit], timeout=10
-            ).returncode == 0
+            active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit], timeout=10).returncode == 0
             if not active and unit not in also_start:
                 continue
             if active:
@@ -492,7 +559,9 @@ def restart_remote_services(also_start=()):
                 except subprocess.TimeoutExpired:
                     # A slow stop must not leave the unit dead: kill what is left and start it anyway
                     print(f"[-] WARNING: stopping {unit} timed out; killing it and starting again.")
-                    subprocess.run(["systemctl", "--user", "kill", "--signal=SIGKILL", unit], capture_output=True, timeout=30)
+                    subprocess.run(
+                        ["systemctl", "--user", "kill", "--signal=SIGKILL", unit], capture_output=True, timeout=30
+                    )
                     subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True, timeout=30)
             r = None
             for attempt in range(3):

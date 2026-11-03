@@ -108,6 +108,9 @@ class TestCodexManagerSmoke(unittest.TestCase):
 
         paths = CodexPaths(home)
         pairs = get_all_pairs(paths.mapping_db)
+        # The test reads the live ~/.codex: only use a pair whose source thread is healthy, otherwise
+        # validate_pair_for_sync (correctly) reports "source_invalid" before it looks at the target.
+        pairs = [p for p in pairs if check_thread_health(p[2], home)[0]]
         if pairs:
             valid_src = pairs[0][2]
             valid_res, status = validate_pair_for_sync(

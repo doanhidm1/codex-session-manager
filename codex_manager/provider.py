@@ -91,7 +91,9 @@ def get_last_web_search(mapping_db_path, provider):
         with sqlite3.connect(mapping_db_path, timeout=5.0) as conn:
             cur = conn.cursor()
             cur.execute("CREATE TABLE IF NOT EXISTS manager_settings (key TEXT PRIMARY KEY, value TEXT)")
-            row = cur.execute("SELECT value FROM manager_settings WHERE key = ?", (f"last_{prov}_web_search",)).fetchone()
+            row = cur.execute(
+                "SELECT value FROM manager_settings WHERE key = ?", (f"last_{prov}_web_search",)
+            ).fetchone()
             return row[0] if row and row[0] else default
     except Exception:
         return default
@@ -119,6 +121,14 @@ def get_config_web_search(config_path):
     return read_top_level_value(config_path, "web_search")
 
 
+def model_matches_provider(provider, model):
+    """A DeepSeek thread cloned from an OpenAI one can carry the OpenAI model name: never trust such a pair."""
+    if not model:
+        return False
+    is_ds_model = str(model).lower().startswith("deepseek")
+    return is_ds_model if provider.lower().strip() == "deepseek" else not is_ds_model
+
+
 def get_last_provider_settings(mapping_db_path, provider):
     """Fetch the last saved (model, reasoning_effort) for a provider from session_manager.sqlite."""
     prov = provider.lower().strip()
@@ -135,6 +145,8 @@ def get_last_provider_settings(mapping_db_path, provider):
                 "SELECT value FROM manager_settings WHERE key = ?", (f"last_{prov}_reasoning_effort",)
             ).fetchone()
             model = (m_row[0] if m_row and m_row[0] else None) or def_model
+            if not model_matches_provider(prov, model):
+                model = def_model
             effort = (e_row[0] if e_row and e_row[0] else None) or def_effort
             return model, effort
     except Exception:
@@ -148,7 +160,7 @@ def save_provider_settings(mapping_db_path, provider, model, reasoning_effort):
         with sqlite3.connect(mapping_db_path, timeout=5.0) as conn:
             cur = conn.cursor()
             cur.execute("CREATE TABLE IF NOT EXISTS manager_settings (key TEXT PRIMARY KEY, value TEXT)")
-            if model:
+            if model and model_matches_provider(prov, model):
                 cur.execute(
                     "INSERT OR REPLACE INTO manager_settings (key, value) VALUES (?, ?)",
                     (f"last_{prov}_model", str(model)),
@@ -215,6 +227,8 @@ def detect_current_provider_settings(codex_home, provider):
         except Exception:
             pass
 
+    if detected_model and not model_matches_provider(prov, detected_model):
+        detected_model = None
     return detected_model or def_model, detected_effort or def_effort
 
 

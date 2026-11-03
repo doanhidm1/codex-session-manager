@@ -625,9 +625,11 @@ def persist_sync_metadata(paths, tgt_id, turns_meta, items_meta, curr_offset, cu
         conn_s.commit()
         conn_s.close()
 
-    if os.path.exists(paths.cat_db):
+    for cat_path in paths.cat_dbs:
+        if not os.path.exists(cat_path):
+            continue
         try:
-            with sqlite3.connect(paths.cat_db, timeout=5.0) as cat_conn:
+            with sqlite3.connect(cat_path, timeout=5.0) as cat_conn:
                 cat_conn.cursor().execute(
                     "UPDATE local_thread_catalog SET source_updated_at = ?, source_recency_at = ? WHERE thread_id = ?",
                     (now_ts, now_ts, tgt_id),

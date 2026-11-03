@@ -158,9 +158,11 @@ def register_migrated_session(paths, new_id, new_name, clean_cwd, target_prov, o
     o_name, d_name = (clean_pname, ds_name)
     o_id, d_id = (src_id, new_id) if target_prov == "deepseek" else (new_id, src_id)
 
-    if os.path.exists(paths.cat_db):
+    for cat_path in paths.cat_dbs:
+        if not os.path.exists(cat_path):
+            continue
         try:
-            with sqlite3.connect(paths.cat_db, timeout=5.0) as cat_conn:
+            with sqlite3.connect(cat_path, timeout=5.0) as cat_conn:
                 cat_conn.execute(
                     "INSERT OR REPLACE INTO local_thread_catalog "
                     "(host_id, thread_id, display_title, source_created_at, source_updated_at, cwd, "

@@ -94,9 +94,11 @@ def rollback_session_backup(target_id, codex_home):
         except Exception:
             pass
 
-    if created_tid and os.path.exists(paths.cat_db):
+    for cat_path in paths.cat_dbs if created_tid else []:
+        if not os.path.exists(cat_path):
+            continue
         try:
-            with sqlite3.connect(paths.cat_db, timeout=5.0) as cat_conn:
+            with sqlite3.connect(cat_path, timeout=5.0) as cat_conn:
                 cat_conn.cursor().execute("DELETE FROM local_thread_catalog WHERE thread_id = ?", (created_tid,))
                 cat_conn.commit()
         except Exception:
