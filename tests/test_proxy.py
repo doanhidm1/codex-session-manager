@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 # Ensure parent directory is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -187,7 +188,10 @@ class TestProxyAdapter(unittest.TestCase):
                 ],
             }
             raw = json.dumps(body).encode("utf-8")
-            adapted_raw = adapt_responses_body(raw, mapping_db_path=mapping_db)
+            # archived_thread_ids() reads the live ~/.codex state: pin it so the registry does not depend on which
+            # provider mode is currently active on this machine
+            with mock.patch("codex_manager.proxy.adapter.archived_thread_ids", return_value=set()):
+                adapted_raw = adapt_responses_body(raw, mapping_db_path=mapping_db)
             adapted_body = json.loads(adapted_raw.decode("utf-8"))
 
             # Verify historical IDs in user message were replaced
